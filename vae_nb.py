@@ -1,184 +1,22 @@
 #!/usr/bin/env python3
 import sys
-import io
 import os
 import argparse
 import datetime
 import math
-
-import keras
-from keras import backend as K
-from keras.layers import Input, Dense, Lambda, Dropout, BatchNormalization, concatenate
-from keras.layers import Layer
-from keras.regularizers import l2
-from keras import losses
-from keras import optimizers
-from keras.callbacks import Callback
-
 import numpy as np
 import scipy as sp
 from scipy.sparse import csr_matrix
 
-###################################
-# We want everything in this file #
-###################################
+########################
+# Import local library #
+########################
 
-def _log_msg(msg):
-    """
-    just print out message with time
-    """
-    tt = datetime.datetime.now()
-    sys.stderr.write("[%s] %s\n"%(tt.strftime("%Y-%m-%d %H:%M:%S"), msg))
-    sys.stderr.flush()
+sys.path.insert(1, os.path.dirname(__file__))
 
-###########################
-# Keras-related functions #
-###########################
-
-def keras_name_func(**kwargs):
-    _name = kwargs.get('name',None)
-    _name_0 = lambda x: None
-    _name_1 = lambda x: '%s_%s'%(_name, str(x))
-    return _name_1 if _name is not None else _name_0
-
-def lgamma(x):
-    """
-    fast approximation of log Gamma function
-    """
-    return - 0.0810614667 - x - K.log(x) + (0.5 + x) * K.log(1.0 + x)
-
-def softplus(x, cutoff=30.0, min_val=-30.0):
-    """
-    A safe softplus function for log(exp(x) + 1)
-
-    We want to take the exponential function within (-cutoff, cutoff)
-    where cutoff > 0 strictly
-
-    If x > cutoff,            --> x + log(1 + exp(-cutoff)) --> x
-    If x < -cutoff,           --> log(1 + exp(-cutoff))     --> 0
-    If x in [-cutoff, cutoff] --> log(1 + exp(x))
-    """
-
-    overflow = K.cast(K.greater(x, cutoff), K.floatx())
-    log1p_exp_pos = K.log(K.exp(K.clip(x, min_val, cutoff)) + 1.0)
-    log1p_exp_neg = K.log(K.exp(K.clip(-x, min_val, cutoff)) + 1.0)
-
-    ret = (
-        (1.0 - overflow) * log1p_exp_pos +
-        (overflow) * (x + log1p_exp_neg)
-    )
-    return ret
-
-class GaussianStoch(Layer):
-    """
-    Sampling from Gaussian distribution
-    x = [mu, logvar]
-    z ~ N(mu, var)
-    """
-    def __init__(self, output_dim, **kwargs):
-        self.output_dim = output_dim
-        self.min_sig = kwargs.get('min_sig', 1e-8)
-        super(GaussianStoch, self).__init__(**kwargs)
-
-    def call(self, x):
-        assert isinstance(x, list)
-        mu, logvar = x
-        batch = K.shape(mu)[0]
-        dim = K.int_shape(mu)[1]
-        epsilon = K.random_normal(shape=(batch, dim), mean=0.0, stddev=1.0)
-
-        return mu + epsilon * (K.exp(logvar * 0.5) + self.min_sig)
-
-    def build(self, input_shape):
-        super(GaussianStoch, self).build(input_shape)
-
-
-class Log1P(Layer):
-    def __init__(self, **kwargs):
-        super(Log1P, self).__init__(**kwargs)
-
-    def call(self, x):
-        return K.log(x + 1.0)
-
-    def build(self, input_shape):
-        super(Log1P, self).build(input_shape)
-
-
-def gaussian_kl_loss(mu, logvar):
-    """
-    Gaussian KL-divergence loss function
-    output = Eq[log q(z|mu,var)]
-    """
-    kl_loss = 1 + logvar - K.square(mu) - K.exp(logvar)
-    kl_loss = K.sum(kl_loss, axis=-1)
-    kl_loss *= -0.5
-    return kl_loss
-
-
-def add_gaussian_stoch_layer(hh, **kwargs):
-    """VAE Gaussian layer
-
-    # arguments
-        hh         : the input of this layer
-
-    # options (**kwargs)
-        latent_dim : the dimension of hidden units
-
-    # returns
-        z_stoch    : latent variables
-        mu         : mean variables
-        logvar     : log variance variables
-    """
-
-    d = K.int_shape(hh)[1]
-    latent_dim = kwargs.get('latent_dim', d)
-
-    _name_it = keras_name_func(**kwargs)
-
-    mu = Dense(latent_dim, activation='linear', name=_name_it('mu'))(hh)
-    logvar = Dense(latent_dim, activation='linear', name=_name_it('sig'))(hh)
-    z_stoch = GaussianStoch(output_dim=(latent_dim,), name=_name_it('stoch'))([mu,logvar])
-
-    return z_stoch, mu, logvar
-
-class ConstBias(Layer):
-    """
-    Just add constant bias terms for each dimension
-    """
-    def __init__(self, units, init_val : float = 0.0, **kwargs):
-        self.units = units
-        self.init_val = init_val
-        super(ConstBias, self).__init__(**kwargs)
-
-    def build(self, input_shape):
-        input_dim = input_shape[-1]
-
-        # This is just to ignore previous
-        self.kernel = self.add_weight(
-            shape=(input_dim, self.units),
-            name='zero_kernel',
-            initializer='zeros',
-            trainable=False
-        )
-
-        self.bias = self.add_weight(
-            shape=(self.units, ),
-            initializer=keras.initializers.constant(self.init_val),
-            name='bias',
-            trainable=True
-        )
-        super(ConstBias, self).build(input_shape)
-
-    def call(self, x):
-        ret = K.dot(x, self.kernel)
-        ret = K.bias_add(ret, self.bias, data_format='channels_last')
-        return ret
-
-    def compute_output_shape(self, input_shape):
-        ret = list(input_shape)
-        ret[-1] = self.units
-        return tuple(ret)
-
+from util import _log_msg
+from scio import read_mtx_cmd, save_array
+from keras_vae import *
 
 ###################################
 # construct negative binomial VAE #
@@ -271,7 +109,7 @@ class NBLogRate(Layer):
         """
         Take units x genes weight matrix
         """
-        return self.get_weights()
+        return K.get_value(self.kernel)
 
     def impute(self, z : np.array):
         """
@@ -288,7 +126,13 @@ class NBLogRate(Layer):
         return (shape_z[0], self.units)
 
 
-def nb_loss(x_obs, x_params, D: int, a0: float = 1e-8):
+def nb_loss(
+        x_obs,             # observed data
+        x_params,          # estimated parameters
+        D: int,            # dimensionality
+        a0: float = 1e-6,  # minimum inverse over-dispersion
+        tau : float = 1e-2 # hyperparameter for over-dispersion
+):
     """
     log-likelihood loss for the negative bignomial model
 
@@ -298,40 +142,62 @@ def nb_loss(x_obs, x_params, D: int, a0: float = 1e-8):
     x_params : Concatenated(μ, ν)
     D        : dimensionality
 
+    a0       : minimum inverse over-dispersion
+    tau      : hyperparameter
+
     # Details
 
-    p(x|α,β) = Γ(α + x + α0)/[Γ(x+1)Γ(α + α0)] (1 + 1/β)^-(α + α0) (1 + β)^-x
+    p(x|α,β) = Γ(α + x)/[Γ(x+1)Γ(α)] (1 + 1/β)^(-α) (1 + β)^-x
 
-    log_lik  = log Γ(α + x + α0) - log Γ(α + α0)
-               -(α + α0) * log(1 + 1/β)
+    log_lik  = log Γ(α + x) - log Γ(α)
+               -α * log(1 + 1/β)
                -x * log(1 + β)
 
-             = log Γ(α + x + α0) - log Γ(α + α0)
-               -(α + α0) * softplus(μ)
+             = log Γ(α + x) - log Γ(α)
+               -α * softplus(μ)
                -x * softplus(-μ)
 
-    mean[x]  = (α + α0) / β
-    var[x]   = (α + α0) / β (1 + 1/ β)
+    mean[x]  = α / β
+    var[x]   = α / β (1 + 1/ β)
 
     β        = exp(-μ)
     α        = softplus(-ν)
 
+    # Additional prior
+
+    1/α      ~ Gamma(τ, τ)
+
+    Ε(1/α)   = τ / τ = 1
+    V(1/α)   = 1 / τ
+
+    ln_prior = (1-τ) ln(α) - τ/α
+               - log Γ(τ) + τ log(τ)
     """
 
     n_params = K.int_shape(x_params)[1]
 
     x_mu = x_params[:, :D]
     x_nu = x_params[:, D:(2*D)]
-    alpha = softplus(-x_nu)
 
-    # negative log-likelihood
+    alpha = softplus(-x_nu) + a0
+
+    _lgamma = sp.special.gammaln
+    _log = math.log
+
+    neg_log_prior = (
+        (tau - 1.0) * K.log(alpha)
+        + tau / alpha
+        + _lgamma(tau)
+        - tau * _log(tau)
+    )
 
     ret = (
-        lgamma(alpha + a0)
+        lgamma(alpha)
         + lgamma(x_obs + 1.0)
-        - lgamma(alpha + a0 + x_obs)
-        + (alpha + a0) * softplus(x_mu)
+        - lgamma(alpha + x_obs)
+        + alpha * softplus(x_mu)
         + x_obs * softplus(-x_mu)
+        + neg_log_prior
     )
 
     return K.sum(ret, -1)
@@ -340,69 +206,134 @@ def nb_loss(x_obs, x_params, D: int, a0: float = 1e-8):
 # negative log-likelihood #
 ###########################
 
-def build_nb_model(D, dims_encoding, dims_encoding_lib, **kwargs):
+def build_nb_model(
+        D,
+        Dc,
+        dims_encoding,
+        dims_encoding_cov,
+        dims_encoding_lib,
+        **kwargs
+):
     """
     Build a negative binomial VAE
 
     # arguments
 
         D                 : dimensionality of input
+        Dc                : dimensionality of covariates
         dims_encoding     : a list of dimensions for encoding layers
-        dims_encoding_lib : a list of dimensions for encoding layers
+        dims_encoding_cov : a list of dimensions for covariate encoding layers
+        dims_encoding_lib : a list of dimensions for library encoding layers
 
     # options
 
-        l2_penalty        : L2 penalty for the mean model (1e-4)
-        nu_l2_penalty     : L2 penalty for the variance model (1e-4)
+        l2_penalty        : L2 penalty for the mean model (1e-2)
+        nu_l2_penalty     : L2 penalty for the variance model (1e-2)
         nn_dropout_rate   : neural network dropout rate (0.1)
+
+        a0                : minimum inverse over-dispersion
+        tau               : hyperparameter
 
     # returns
 
-        model             : a VAE model for training
-        latent_mean       : mean of the latent model
-        latent_logvar     : standard deviation of the latent model
-        library_size      : a model that outputs library size
+        model             : a training model
+        vae_loss          : a loss function
+        latent_models     : a dictionary of latent models
 
     """
 
-    l2_penalty = kwargs.get('l2_penalty', 1e-4)
-    l2_penalty_nu = kwargs.get('nu_l2_penalty', 1e-4)
+    l2_penalty = kwargs.get('l2_penalty', 1e-2)
+    l2_penalty_nu = kwargs.get('nu_l2_penalty', 1e-2)
     nn_dropout = kwargs.get('nn_dropout_rate', .0)
     nu_bias_init = kwargs.get('dispersion_bias', -4.0)
 
     x_in = Input(shape=(D,))
     x_log = Log1P()(x_in)
 
-    ###########################
-    # 1. Path from x to mean  #
-    # Approximation of q(z|x) #
-    ###########################
+    #############################
+    # 1. A path from x to mean  #
+    # Approximation of q(z|x)   #
+    #############################
 
     hh = x_log
 
     for i,d in enumerate(dims_encoding):
 
-        hh = BatchNormalization(name = 'batch_norm_%d'%(i+1))(hh)
+        hh = BatchNormalization(name = 'mu_batch_norm_%d'%(i+1))(hh)
 
         hh = Dense(
             d,
             activation='relu',
+            kernel_regularizer=l2(l2_penalty),
             activity_regularizer=l2(l2_penalty),
-            name='encoding_%d'%(i+1)
+            name='mu_%d'%(i+1)
+        )(hh)
+
+        if nn_dropout > 0.0 and nn_dropout < 1.0:
+            _name = 'mu_dropout_%d'%(i+1)
+            hh = Dropout(rate=nn_dropout, input_shape=(d,), name=_name)(hh)
+
+    d = dims_encoding[-1]
+
+    _temp = add_gaussian_stoch_layer(hh, latent_dim = d, name = 'z_mu_stoch')
+    z_mu, z_mu_mean, z_mu_logvar = _temp
+
+    ##################
+    # spike-and-slap #
+    ##################
+
+    gumbel_temperature = K.variable(1.0, name="Gumbel Temperature")
+    latent_spike = None
+
+    if kwargs.get('with_spike', False):
+
+        z_spike_logits = hh
+
+        z_spike = BinaryGumbelSoftmax(
+            output_dim = (d,),
+            temperature = gumbel_temperature,
+            name = "spike_z"
+        )(z_spike_logits)
+
+        z_mu = layers.multiply([z_mu , z_spike])
+
+        latent_spike = keras.Model(x_in, z_spike)
+
+        _log_msg("With spike-slab latent states")
+
+
+    ##############################################
+    # An additional path from covariates to mean #
+    ##############################################
+
+    x_covar = Input(shape=(Dc,))
+
+    hh = x_covar
+
+    for i,d in enumerate(dims_encoding_cov):
+
+        hh = BatchNormalization(name = 'covar_batch_norm_%d'%(i+1))(hh)
+
+        hh = Dense(
+            d,
+            activation='relu',
+            kernel_regularizer=l2(l2_penalty),
+            activity_regularizer=l2(l2_penalty),
+            name='covar_%d'%(i+1)
         )(hh)
 
         if nn_dropout > 0.0 and nn_dropout < 1.0:
             _name = 'dropout_%d'%(i+1)
             hh = Dropout(rate=nn_dropout, input_shape=(d,), name=_name)(hh)
 
-    d = dims_encoding[-1]
+    d = dims_encoding_cov[-1]
 
-    _temp = add_gaussian_stoch_layer(hh, latent_dim = d, name = 'z_mu_stoch')
+    _temp = add_gaussian_stoch_layer(hh, latent_dim = d, name = 'z_covar_stoch')
+    z_covar, z_covar_mean, z_covar_logvar = _temp
 
-    z_mu, z_mu_mean, z_mu_logvar = _temp
+    # Simply combine both effects
 
-    # Approximation of q(E[x]|z) --> this must be linear
-    hh = z_mu
+    z_mu_covar = layers.add([z_mu, z_covar], name='z_mu_covar')
 
     ##################################
     # 2. Path from x to library size #
@@ -418,6 +349,7 @@ def build_nb_model(D, dims_encoding, dims_encoding_lib, **kwargs):
         hh_lib = Dense(
             d,
             activation='relu',
+            kernel_regularizer=l2(l2_penalty),
             activity_regularizer=l2(l2_penalty),
             name='lib_%d'%(i+1)
         )(hh_lib)
@@ -431,14 +363,19 @@ def build_nb_model(D, dims_encoding, dims_encoding_lib, **kwargs):
     _temp = add_gaussian_stoch_layer(hh_lib, latent_dim = d, name='z_lib_stoch')
     z_lib, z_lib_mean, z_lib_logvar = _temp
 
-    x_lib = Dense(1, name='x_lib')(z_lib)
+    x_lib = Dense(
+        units = 1,
+        name = 'x_lib',
+        kernel_regularizer=l2(l2_penalty),
+        activity_regularizer=l2(l2_penalty)
+    )(z_lib)
 
     ####################
     # combine log rate #
     ####################
 
     log_rate_layer = NBLogRate(D, name="NBLogRate")
-    x_mu = log_rate_layer([z_mu, x_lib])
+    x_mu = log_rate_layer([z_mu_covar, x_lib])
 
     #############################
     # 3. Path form x to q(nu|x) #
@@ -454,9 +391,9 @@ def build_nb_model(D, dims_encoding, dims_encoding_lib, **kwargs):
     # synthesize the training model #
     #################################
 
-    x_out = concatenate([x_mu, x_nu], axis=-1, name='x_out')
+    x_out = layers.concatenate([x_mu, x_nu], axis=-1, name='x_out')
 
-    model = keras.Model(x_in, x_out)
+    model = keras.Model([x_in, x_covar], x_out)
 
     #########################
     # latent variable model #
@@ -476,45 +413,100 @@ def build_nb_model(D, dims_encoding, dims_encoding_lib, **kwargs):
 
     libsize = keras.Model(x_in, x_lib_out)
 
-    def vae_loss(_weight):
+    model.kl_weight = K.variable(0.0, name = "KL weight")
 
+    model.gumbel_temperature = gumbel_temperature
+
+    # regularization or regression to prior
+    kl_mu = gaussian_kl_loss(z_mu_mean, z_mu_logvar)
+    kl_lib = gaussian_kl_loss(z_lib_mean, z_lib_logvar)
+    kl_spike = 0.0
+
+    if kwargs.get('with_spike', False):
+        kl_spike = binary_gumbel_kl_loss(z_spike, z_spike_logits)
+
+    a0 = kwargs.get('a0', 1e-6)  # minimum inverse over-dispersion
+    tau = kwargs.get('tau', 1e-2)# hyperparameter
+
+    def vae_loss(_weight):
         # define composite loss function
         def loss(x, xhat):
-            lik_loss = nb_loss(x, xhat, D=D)
-            kl_mu = gaussian_kl_loss(z_mu_mean, z_mu_logvar)
-            kl_lib = gaussian_kl_loss(z_lib_mean, z_lib_logvar)
-            return _weight * (kl_mu + kl_lib) + lik_loss
+            lik_loss = nb_loss(x, xhat, D = D, a0 = a0, tau = tau)
+            return _weight * (kl_mu + kl_lib + kl_spike) + lik_loss
 
         return loss # return this composite loss
 
-    return model, vae_loss, latent_mu, latent_logvar, libsize
+    latent_models = {
+        'mu'        : latent_mu,
+        'mu_logvar' : latent_logvar,
+        'spike'     : latent_spike,
+        'library'   : libsize
+    }
+
+    return model, vae_loss, latent_models
 
 ################
 # optimization #
 ################
 
-class KLAnnealing(Callback):
+class Annealing(Callback):
 
-    def __init__(self, weight, base : float = 1e-4, speed : float = 100.):
-        self.base = base
-        self.speed = speed
-        self.weight = weight
+    def __init__(
+            self,
+            kl_weight,
+            gumbel_temperature,
+            gumbel_rate : float = 1e-2,
+            kl_base : float = 1e-2,
+            kl_rate : float = 1e-2
+    ):
+        self.kl_base = kl_base
+        self.kl_rate = kl_rate
+        self.kl_weight = kl_weight
+
+        self.gumbel_temperature = gumbel_temperature
+        self.gumbel_rate = gumbel_rate
 
     def on_epoch_end(self, epoch, logs={}):
-        t = float(epoch) / self.speed
-        base = self.base
-        new_weight = base + (1.0 - base) * (1.0 - math.exp(-t))
 
-        K.set_value(self.weight, new_weight)
-        _log_msg('Adjusted KL weight %f'%K.get_value(self.weight))
+        ###########################
+        # KL divergence annealing #
+        ###########################
 
-def train_nb_vae_kl_annealing(_model, _loss, xx, **kwargs):
+        t = float(epoch) * self.kl_rate
+        kl_base = self.kl_base
+        new_kl_weight = kl_base + (1.0 - kl_base) * (1.0 - math.exp(-t))
 
-    kl_weight = K.variable(0.0)
+        K.set_value(self.kl_weight, new_kl_weight)
+
+        ##############################
+        # Gumbel Softmax temperature #
+        ##############################
+
+        t = float(epoch) * self.gumbel_rate
+        K.set_value(self.gumbel_temperature, max(0.1, math.exp(-t)))
+
+        _log_msg('Adjust KL divergence by  %.2e'%K.get_value(self.kl_weight))
+        _log_msg('Apply Gumbel temperature %.2e'%K.get_value(self.gumbel_temperature))
+
+
+def train_nb_vae_kl_annealing(_model, _loss, xx_cc : list, **kwargs):
+    """
+    Train VAE with KL divergence annealing
+    """
+
+    xx, cc = xx_cc
+
+    kl_weight = _model.kl_weight
+    gumbelT = _model.gumbel_temperature
+
+    K.set_value(kl_weight, 0.0)
+    K.set_value(gumbelT, 1.0)
 
     lr = kwargs.get('learning_rate', 1e-4)
+    clipval = kwargs.get('clipvalue', lr)
+    epochs = kwargs.get('epochs', 100)
 
-    opt = optimizers.adam(lr=lr, clipvalue=.01)
+    opt = optimizers.adam(lr=lr, clipvalue=clipval)
 
     _model.compile(
         optimizer=opt,
@@ -522,10 +514,10 @@ def train_nb_vae_kl_annealing(_model, _loss, xx, **kwargs):
     )
 
     trace = _model.fit(
+        xx_cc,
         xx,
-        xx,
-        callbacks=[KLAnnealing(kl_weight)],
-        **kwargs
+        epochs = epochs,
+        callbacks=[Annealing(kl_weight, gumbelT)]
     )
 
     return trace
@@ -535,35 +527,166 @@ def train_nb_vae_kl_annealing(_model, _loss, xx, **kwargs):
 # commandline routine #
 #######################
 
-if __name__ == '__main__':
+def run(args):
 
-    import argparse
+    _dims_latent = list(map(int, args.dlatent.split(',')))
+    _dims_covar = list(map(int, args.dcovar.split(',')))
+    _dims_library = list(map(int, args.dlibrary.split(',')))
+
+    data_cmd = "zstd -dc %s"%args.data
+    X = read_mtx_cmd(data_cmd)
+
+    C = np.array(np.ones((X.shape[0], 1)))
+
+    if args.covar is not None:
+        _log_msg("Reading the covariates file")
+        covar_cmd = "zstd -dc %s"%args.covar
+        C = read_mtx_cmd(covar_cmd)
+
+    #######################
+    # Construct the model #
+    #######################
+
+    _log_msg("Building a model")
+
+    model, vae_loss, latent_models = build_nb_model(
+        D = X.shape[1],
+        Dc = C.shape[1],
+        dims_encoding = _dims_latent,
+        dims_encoding_cov = _dims_covar,
+        dims_encoding_lib = _dims_library,
+        with_spike = args.spike,
+        nn_dropout_rate = args.dropout
+    )
+
+    _log_msg("Start training the NB-VAE model")
+
+    trace = train_nb_vae_kl_annealing(
+        model,
+        vae_loss,
+        [X, C],
+        learning_rate = args.learning_rate,
+        epochs = args.epochs,
+        batch_size = args.batch
+    )
+
+    _log_msg("Successfully finished")
+
+    model.X = X
+
+    _log_msg("Attached the training data to the model")
+
+    return model, latent_models, trace
+
+
+def write_results(_model, _latent_models, trace, args) :
+
+    _log_msg("Output latent representations")
+
+    X = _model.X
+
+    z_mean = _latent_models['mu'].predict(X)
+    z_logvar = _latent_models['mu_logvar'].predict(X)
+    z_library = _latent_models['library'].predict(X)
+
+    z_spike = np.array([])
+    if _latent_models['spike'] is not None:
+        z_spike = _latent_models['spike'].predict(X)
+
+    weight = _model.get_layer("NBLogRate").weights()
+
+    save_array(z_mean, args.out + ".z_mean.zst")
+    save_array(z_logvar, args.out + ".z_logvar.zst")
+    save_array(z_library, args.out + ".z_library.zst")
+    save_array(z_spike, args.out + ".z_spike.zst")
+    save_array(weight, args.out + ".weights.zst")
+    save_array(np.array(trace), args.out + ".elbo.zst")
+
+    return
+
+
+if __name__ == '__main__':
 
     _desc = r"""
     Train Negative Binomial VAE
 """
 
     parser = argparse.ArgumentParser(
-        description=_desc,
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description = _desc,
+        formatter_class = argparse.ArgumentDefaultsHelpFormatter
     )
 
-    parser.add_argument('--data', default=None)
-    parser.add_argument('--dims_latent', default="128,1024,16")
-    parser.add_argument('--dims_library', default="32,4")
-    parser.add_argument('--batch_size', default=100, type=int)
-    parser.add_argument('--epochs', default=10000, type=int)
+    parser.add_argument(
+        '--data',
+        default = None,
+        help = "matrix market data file"
+    )
+    parser.add_argument(
+        '--covar',
+        default = None,
+        help = "matrix market data file"
+    )
+
+    parser.add_argument(
+        '--dlatent',
+        default = "128,1024,16",
+        help = "latent dimension for encoding (mu)"
+    )
+    parser.add_argument(
+        '--dcovar',
+        default = "16,16",
+        help = "latent dimension for encoding (covariates)"
+    )
+    parser.add_argument(
+        '--dlibrary',
+        default = "16,4",
+        help = "latent dimension for encoding (library size)"
+    )
+    parser.add_argument(
+        '--batch',
+        default = 100,
+        type = int,
+        help = "batch size"
+    )
+    parser.add_argument(
+        '--learning_rate',
+        default = 1e-4,
+        type = float,
+        help = "learning rate"
+    )
+    parser.add_argument(
+        '--epochs',
+        default = 1000,
+        type = int,
+        help = "number of epochs"
+    )
+    parser.add_argument(
+        '--dropout',
+        default = 0.1,
+        type = float,
+        help = "Apply dropout to avoid over-fitting"
+    )
+    parser.add_argument(
+        '--spike',
+        default = False,
+        type = bool,
+        help = "Adding a spike-and-slab layer (experimental)"
+    )
+
     parser.add_argument('--out', default=None)
+
     args = parser.parse_args()
 
-    _dims_latent = list(map(int, args.dims_latent.split(',')))
-    _dims_library = list(map(int, args.dims_library.split(',')))
+    if args.out is None:
+        _log_msg("Provide the output header!")
+        exit(1)
 
     if args.data is None:
         _log_msg("Need data to fit the model!")
         exit(1)
 
-    _log_msg("Need to implement")
+    model, latent_models, trace = run(args)
 
-    exit(1)
+    write_results(model, latent_models, trace, args)
 
+    exit(0)
