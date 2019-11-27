@@ -1,7 +1,6 @@
 import sys
 import os
 import os.path
-import zstd
 import scipy as sp
 import numpy as np
 import shlex
