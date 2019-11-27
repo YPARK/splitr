@@ -178,7 +178,7 @@ def save_array(arr, fname, zstd=True):
 
 def save_list(ll, fname):
     with open(fname, 'w') as fh:
-        _out = '\n'.join(map(str, ll))
+        _out = '\n'.join(map(lambda x: '%.4f'%x, ll))
         fh.write(_out)
         _log_msg("Wrote %s"%fname)
 
