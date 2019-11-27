@@ -175,3 +175,11 @@ def save_array(arr, fname, zstd=True):
             os.remove(fname)
 
     return
+
+def save_list(ll, fname):
+    with open(fname, 'w') as fh:
+        _out = '\n'.join(map(str, ll))
+        fh.write(_out)
+        _log_msg("Wrote %s"%fname)
+
+    return

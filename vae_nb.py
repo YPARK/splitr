@@ -15,7 +15,7 @@ from scipy.sparse import csr_matrix
 sys.path.insert(1, os.path.dirname(__file__))
 
 from util import _log_msg
-from scio import read_mtx_cmd, save_array
+from scio import read_mtx_cmd, save_array, save_list
 from keras_vae import *
 
 ###################################
@@ -561,7 +561,7 @@ def run(args):
 
     _log_msg("Start training the NB-VAE model")
 
-    trace = train_nb_vae_kl_annealing(
+    out = train_nb_vae_kl_annealing(
         model,
         vae_loss,
         [X, C],
@@ -573,6 +573,8 @@ def run(args):
     _log_msg("Successfully finished")
 
     model.X = X
+
+    trace = out.history.get('loss', [])
 
     _log_msg("Attached the training data to the model")
 
@@ -599,9 +601,11 @@ def write_results(_model, _latent_models, trace, args) :
     save_array(z_logvar, args.out + ".z_logvar.zst")
     save_array(z_library, args.out + ".z_library.zst")
     save_array(z_spike, args.out + ".z_spike.zst")
-    save_array(weight, args.out + ".weights.zst")
-    save_array(np.array(trace), args.out + ".elbo.zst")
 
+    _log_msg("Output other results")
+
+    save_array(weight, args.out + ".weights.zst")
+    save_list(trace, args.out + ".elbo")
     return
 
 
