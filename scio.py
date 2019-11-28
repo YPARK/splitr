@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import sys
 import os
 import os.path
@@ -11,10 +13,13 @@ sys.path.insert(1, os.path.dirname(__file__))
 
 from util import _log_msg
 
+__all__ = ["read_mtx_zstd", "read_mtx_cmd",
+           "save_array", "save_list"]
+
 def read_mtx_zstd(mtxFile, **kwargs):
     """
-Read Matrix Market triplets compressed by Zstandard
-"""
+    Read Matrix Market triplets compressed by Zstandard
+    """
 
     verbose = kwargs.get('verbose',True)
 

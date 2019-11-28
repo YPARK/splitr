@@ -1,11 +1,14 @@
+# -*- coding: utf-8 -*-
+
 import io
 import sys
 import datetime
-
 import numpy as np
 import scipy as sp
 
 from sklearn import preprocessing
+
+__all__ = ["_log_msg", "filter_zero_rows_cols", "normalize_X", "standardize_NB_X"]
 
 def filter_zero_rows_cols(X, p_cells_cutoff = .99, p_genes_cutoff = .99, eps = 1e-8):
     """
