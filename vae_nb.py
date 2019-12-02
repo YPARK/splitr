@@ -15,7 +15,7 @@ from scipy.sparse import csr_matrix
 sys.path.insert(1, os.path.dirname(__file__))
 
 from util import _log_msg
-from scio import read_mtx_cmd, save_array, save_list
+from scio import *
 from keras_vae import *
 
 ###################################
@@ -326,8 +326,8 @@ def build_nb_model(
             _name = 'dropout_%d'%(i+1)
             hh = Dropout(rate=nn_dropout, input_shape=(d,), name=_name)(hh)
 
-    d = dims_encoding_cov[-1]
-
+    # Use the same latent dimensionality
+    d = dims_encoding[-1]
     _temp = add_gaussian_stoch_layer(hh, latent_dim = d, name = 'z_covar_stoch')
     z_covar, z_covar_mean, z_covar_logvar = _temp
 
@@ -457,7 +457,7 @@ class Annealing(Callback):
             gumbel_temperature,
             gumbel_rate : float = 1e-2,
             kl_base : float = 1e-2,
-            kl_rate : float = 1e-2
+            kl_rate : float = 1e-1
     ):
         self.kl_base = kl_base
         self.kl_rate = kl_rate
@@ -522,10 +522,19 @@ def train_nb_vae_kl_annealing(_model, _loss, xx_cc : list, **kwargs):
 
     return trace
 
-
 #######################
 # commandline routine #
 #######################
+
+def standardize_columns(C) :
+
+    covar = np.array(C)
+    covar = np.ma.masked_where(~np.isfinite(covar), covar)
+    covar_std = (covar - np.mean(covar, 0)) / np.std(covar, 0)
+    ret = covar_std.data
+    ret[~np.isfinite(ret)] = 0.0
+
+    return ret
 
 def run(args):
 
@@ -533,15 +542,36 @@ def run(args):
     _dims_covar = list(map(int, args.dcovar.split(',')))
     _dims_library = list(map(int, args.dlibrary.split(',')))
 
-    data_cmd = "zstd -dc %s"%args.data
-    X = read_mtx_cmd(data_cmd)
+    X = read_mtx_file(args.data)
 
-    C = np.array(np.ones((X.shape[0], 1)))
+    _log_msg("Read data matrix : %s"%args.data)
+
+    if args.columns_are_samples:
+        X = np.array(X.T.todense())
+    else:
+        X = np.array(X.todense())
 
     if args.covar is not None:
-        _log_msg("Reading the covariates file")
-        covar_cmd = "zstd -dc %s"%args.covar
-        C = read_mtx_cmd(covar_cmd)
+        C = read_mtx_file(args.covar)
+        _log_msg("Read covariate matrix : %s"%args.covar)
+
+        if args.columns_are_samples:
+            C = np.array(C.T.todense())
+        else:
+            C = np.array(C.todense())
+
+        if args.standardize_covar:
+            C = standardize_columns(C)
+            _log_msg("Standardization of the covariate matrix")
+        else:
+            C[~np.isfinite(C)] = 0.0
+
+    else:
+        C = np.array(np.zeros((X.shape[0], 1)))
+        _log_msg("No covariate")
+
+    if X.shape[0] != C.shape[0]:
+        raise Exception("X and C contain different # of samples")
 
     #######################
     # Construct the model #
@@ -625,6 +655,13 @@ if __name__ == '__main__':
         default = None,
         help = "matrix market data file"
     )
+
+    parser.add_argument(
+        '--columns_are_samples',
+        default = True,
+        help = "columns are samples"
+    )
+
     parser.add_argument(
         '--covar',
         default = None,
@@ -632,18 +669,24 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
+        '--standardize_covar',
+        default = True,
+        help = "standardization of covariates"
+    )
+
+    parser.add_argument(
         '--dlatent',
-        default = "128,1024,16",
+        default = "32,256,16",
         help = "latent dimension for encoding (mu)"
     )
     parser.add_argument(
         '--dcovar',
-        default = "16,16",
+        default = "16,4",
         help = "latent dimension for encoding (covariates)"
     )
     parser.add_argument(
         '--dlibrary',
-        default = "16,4",
+        default = "16,1",
         help = "latent dimension for encoding (library size)"
     )
     parser.add_argument(
@@ -681,14 +724,13 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    if args.out is None:
-        _log_msg("Provide the output header!")
-        exit(1)
-
     if args.data is None:
         _log_msg("Need data to fit the model!")
         exit(1)
 
+    if args.out is None:
+        _log_msg("Provide the output header!")
+        exit(1)
     model, latent_models, trace = run(args)
 
     write_results(model, latent_models, trace, args)

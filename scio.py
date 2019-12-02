@@ -14,6 +14,7 @@ sys.path.insert(1, os.path.dirname(__file__))
 from util import _log_msg
 
 __all__ = ["read_mtx_cmd",
+           "read_mtx_file",
            "save_array",
            "save_list"]
 
@@ -95,6 +96,17 @@ def read_mtx_cmd(cmd, **kwargs):
 
     proc.terminate()
     return ret
+
+def read_mtx_file(filename, **kwargs):
+
+    if filename.endswith('.zst'):
+        cmd = "zstd -dc "
+    elif filename.endswith('.gz'):
+        cmd = "gzip -dc "
+    else:
+        cmd = "cat "
+
+    return read_mtx_cmd(cmd + filename, **kwargs)
 
 def save_array(arr, fname, zstd=True):
 
