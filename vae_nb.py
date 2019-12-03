@@ -17,6 +17,8 @@ from scio import *
 from keras_vae import *
 from np_util import gammaln as _lgamma
 
+from keras.utils import plot_model
+
 ###################################
 # construct negative binomial VAE #
 ###################################
@@ -524,15 +526,6 @@ def preprocess_data(args):
     else:
         X = np.array(X.todense())
 
-    if args.standardize_data:
-        X_ = np.log(X + 1.0)
-        X_ = standardize_columns(X_)
-        X_[X_ < -4.0] = -4.0
-        X_[X_ > 4.0] = 4.0
-        X = np.exp(X_)
-    else:
-        X[~np.isfinite(X)] = 0.0
-
     if args.covar is not None:
         C = read_mtx_file(args.covar)
         _log_msg("Read covariate matrix : %s"%args.covar)
@@ -567,6 +560,15 @@ def preprocess_data(args):
 
     cc = C[rows, :]
 
+    if args.standardize_data:
+        xx_ = np.log(xx + 1.0)
+        xx_ = standardize_columns(xx_)
+        xx_[xx_ < -4.0] = -4.0
+        xx_[xx_ > 4.0] = 4.0
+        xx = np.exp(xx_)
+    else:
+        xx[~np.isfinite(xx)] = 0.0
+
     return xx, cc, rows, cols
 
 def run(args):
@@ -590,6 +592,8 @@ def run(args):
         with_spike = args.spike,
         nn_dropout_rate = args.dropout
     )
+
+    plot_model(model, args.out + "_model.png")
 
     _log_msg("Start training the NB-VAE model")
 
