@@ -108,24 +108,40 @@ def read_mtx_file(filename, **kwargs):
 
     return read_mtx_cmd(cmd + filename, **kwargs)
 
-def save_array(arr, fname, zstd=True):
+def save_array(arr, fname):
 
     assert(isinstance(arr, np.ndarray))
 
+    do_zstd = False
+    do_gzip = False
+
     if len(fname) > 4 and fname[-4:] == ".zst":
         fname = fname[:-4]
-        zstd = True
+        do_zstd = True
+
+    if len(fname) > 3 and fname[-4:] == ".gz":
+        fname = fname[:-3]
+        do_gzip = True
+
+    fmt = "%d" if(arr.dtype == np.int) else "%.4f"
 
     np.savetxt(
         fname=fname,
         X=arr,
-        fmt="%.4f",
+        fmt=fmt,
         delimiter="\t"
     )
 
-    if zstd :
+    if do_zstd :
         cmd = "zstd -f %s"%(fname)
         out = fname + ".zst"
+        proc = subprocess.call(cmd, shell=True)
+        if os.path.exists(out):
+            os.remove(fname)
+
+    if do_gzip :
+        cmd = "gzip %s"%(fname)
+        out = fname + ".gz"
         proc = subprocess.call(cmd, shell=True)
         if os.path.exists(out):
             os.remove(fname)

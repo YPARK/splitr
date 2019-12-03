@@ -103,7 +103,7 @@ def gaussian_kl_loss(mu, logvar):
     Gaussian KL-divergence loss function
     output = Eq[log q(z|mu,var)]
     """
-    kl_loss = 1 + logvar - K.square(mu) - K.exp(logvar)
+    kl_loss = 1.0 + logvar - K.square(mu) - K.exp(logvar)
     kl_loss = K.sum(kl_loss, axis=-1)
     kl_loss *= -0.5
     return kl_loss

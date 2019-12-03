@@ -10,24 +10,26 @@ from sklearn import preprocessing
 
 __all__ = ["_log_msg", "filter_zero_rows_cols", "normalize_X", "standardize_NB_X"]
 
-def filter_zero_rows_cols(X, p_cells_cutoff = .99, p_genes_cutoff = .99, eps = 1e-8):
+def filter_zero_rows_cols(X, n_cells_nonzero = 1000, p_genes_nonzero = .1, eps = 1e-8):
     """
     Filter cells (rows) and genes (columns) that contain too many zeros
 
     returns _X, _cells, _genes
     """
 
-    ret = X.copy()
+    ret = np.abs(X.copy())
 
-    observed_cells = np.mean(ret > eps, axis=1)
-    _cells = np.where(observed_cells > (1.0 - p_cells_cutoff))[0]
+    observed_cells = np.sum(ret, axis=1)
+    _cells = np.where(observed_cells >= n_cells_nonzero)[0]
+
+    _log_msg("Valid samples: %d"%len(_cells))
 
     ret = ret[_cells, :]
 
     observed_genes = np.mean(ret.T > eps, axis=1)
-    _genes = np.where(observed_genes > (1.0 - p_genes_cutoff))[0]
+    _genes = np.where(observed_genes >= p_genes_nonzero)[0]
 
-    _log_msg("Valid genes: %05d"%len(_genes))
+    _log_msg("Valid genes: %d"%len(_genes))
 
     ret = ret[:, _genes]
 

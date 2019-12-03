@@ -5,8 +5,6 @@ import argparse
 import datetime
 import math
 import numpy as np
-import scipy as sp
-from scipy.sparse import csr_matrix
 
 ########################
 # Import local library #
@@ -14,9 +12,10 @@ from scipy.sparse import csr_matrix
 
 sys.path.insert(1, os.path.dirname(__file__))
 
-from util import _log_msg
+from util import _log_msg, filter_zero_rows_cols
 from scio import *
 from keras_vae import *
+from np_util import gammaln as _lgamma
 
 ###################################
 # construct negative binomial VAE #
@@ -181,22 +180,23 @@ def nb_loss(
 
     alpha = softplus(-x_nu) + a0
 
-    _lgamma = sp.special.gammaln
-    _log = math.log
-
     neg_log_prior = (
         (tau - 1.0) * K.log(alpha)
         + tau / alpha
         + _lgamma(tau)
-        - tau * _log(tau)
+        - tau * math.log(tau)
     )
 
-    ret = (
+    neg_log_lik = (
         lgamma(alpha)
         + lgamma(x_obs + 1.0)
         - lgamma(alpha + x_obs)
         + alpha * softplus(x_mu)
         + x_obs * softplus(-x_mu)
+    )
+
+    ret = (
+        neg_log_lik
         + neg_log_prior
     )
 
@@ -210,7 +210,6 @@ def build_nb_model(
         D,
         Dc,
         dims_encoding,
-        dims_encoding_cov,
         dims_encoding_lib,
         **kwargs
 ):
@@ -222,7 +221,6 @@ def build_nb_model(
         D                 : dimensionality of input
         Dc                : dimensionality of covariates
         dims_encoding     : a list of dimensions for encoding layers
-        dims_encoding_cov : a list of dimensions for covariate encoding layers
         dims_encoding_lib : a list of dimensions for library encoding layers
 
     # options
@@ -264,7 +262,6 @@ def build_nb_model(
         hh = Dense(
             d,
             activation='relu',
-            kernel_regularizer=l2(l2_penalty),
             activity_regularizer=l2(l2_penalty),
             name='mu_%d'%(i+1)
         )(hh)
@@ -307,32 +304,13 @@ def build_nb_model(
     ##############################################
 
     x_covar = Input(shape=(Dc,))
-
-    hh = x_covar
-
-    for i,d in enumerate(dims_encoding_cov):
-
-        hh = BatchNormalization(name = 'covar_batch_norm_%d'%(i+1))(hh)
-
-        hh = Dense(
-            d,
-            activation='relu',
-            kernel_regularizer=l2(l2_penalty),
-            activity_regularizer=l2(l2_penalty),
-            name='covar_%d'%(i+1)
-        )(hh)
-
-        if nn_dropout > 0.0 and nn_dropout < 1.0:
-            _name = 'dropout_%d'%(i+1)
-            hh = Dropout(rate=nn_dropout, input_shape=(d,), name=_name)(hh)
-
-    # Use the same latent dimensionality
-    d = dims_encoding[-1]
-    _temp = add_gaussian_stoch_layer(hh, latent_dim = d, name = 'z_covar_stoch')
-    z_covar, z_covar_mean, z_covar_logvar = _temp
+    z_covar  = Dense(
+        units=dims_encoding[-1],
+        name='z_covar',
+        activity_regularizer=l2(l2_penalty)
+    )(x_covar)
 
     # Simply combine both effects
-
     z_mu_covar = layers.add([z_mu, z_covar], name='z_mu_covar')
 
     ##################################
@@ -349,7 +327,6 @@ def build_nb_model(
         hh_lib = Dense(
             d,
             activation='relu',
-            kernel_regularizer=l2(l2_penalty),
             activity_regularizer=l2(l2_penalty),
             name='lib_%d'%(i+1)
         )(hh_lib)
@@ -366,7 +343,6 @@ def build_nb_model(
     x_lib = Dense(
         units = 1,
         name = 'x_lib',
-        kernel_regularizer=l2(l2_penalty),
         activity_regularizer=l2(l2_penalty)
     )(z_lib)
 
@@ -400,8 +376,8 @@ def build_nb_model(
     #########################
 
     latent_mu = keras.Model(x_in, z_mu_mean)
-
     latent_logvar = keras.Model(x_in, z_mu_logvar)
+    latent_covar = keras.Model(x_covar, z_covar)
 
     ################
     # library size #
@@ -439,6 +415,7 @@ def build_nb_model(
     latent_models = {
         'mu'        : latent_mu,
         'mu_logvar' : latent_logvar,
+        'covar'     : latent_covar,
         'spike'     : latent_spike,
         'library'   : libsize
     }
@@ -502,7 +479,7 @@ def train_nb_vae_kl_annealing(_model, _loss, xx_cc : list, **kwargs):
     K.set_value(kl_weight, 0.0)
     K.set_value(gumbelT, 1.0)
 
-    lr = kwargs.get('learning_rate', 1e-4)
+    lr = kwargs.get('learning_rate', 1e-2)
     clipval = kwargs.get('clipvalue', lr)
     epochs = kwargs.get('epochs', 100)
 
@@ -536,11 +513,7 @@ def standardize_columns(C) :
 
     return ret
 
-def run(args):
-
-    _dims_latent = list(map(int, args.dlatent.split(',')))
-    _dims_covar = list(map(int, args.dcovar.split(',')))
-    _dims_library = list(map(int, args.dlibrary.split(',')))
+def preprocess_data(args):
 
     X = read_mtx_file(args.data)
 
@@ -550,6 +523,15 @@ def run(args):
         X = np.array(X.T.todense())
     else:
         X = np.array(X.todense())
+
+    if args.standardize_data:
+        X_ = np.log(X + 1.0)
+        X_ = standardize_columns(X_)
+        X_[X_ < -4.0] = -4.0
+        X_[X_ > 4.0] = 4.0
+        X = np.exp(X_)
+    else:
+        X[~np.isfinite(X)] = 0.0
 
     if args.covar is not None:
         C = read_mtx_file(args.covar)
@@ -563,8 +545,8 @@ def run(args):
         if args.standardize_covar:
             C = standardize_columns(C)
             _log_msg("Standardization of the covariate matrix")
-        else:
-            C[~np.isfinite(C)] = 0.0
+
+        C[~np.isfinite(C)] = 0.0
 
     else:
         C = np.array(np.zeros((X.shape[0], 1)))
@@ -573,6 +555,27 @@ def run(args):
     if X.shape[0] != C.shape[0]:
         raise Exception("X and C contain different # of samples")
 
+    ############
+    # data Q/C #
+    ############
+
+    xx, rows, cols = filter_zero_rows_cols(
+        X,
+        args.sample_cutoff,
+        args.feature_cutoff
+    )
+
+    cc = C[rows, :]
+
+    return xx, cc, rows, cols
+
+def run(args):
+
+    _dims_latent = list(map(int, args.dlatent.split(',')))
+    _dims_library = list(map(int, args.dlibrary.split(',')))
+
+    xx, cc, rows, cols = preprocess_data(args)
+
     #######################
     # Construct the model #
     #######################
@@ -580,10 +583,9 @@ def run(args):
     _log_msg("Building a model")
 
     model, vae_loss, latent_models = build_nb_model(
-        D = X.shape[1],
-        Dc = C.shape[1],
+        D = xx.shape[1],
+        Dc = cc.shape[1],
         dims_encoding = _dims_latent,
-        dims_encoding_cov = _dims_covar,
         dims_encoding_lib = _dims_library,
         with_spike = args.spike,
         nn_dropout_rate = args.dropout
@@ -594,15 +596,19 @@ def run(args):
     out = train_nb_vae_kl_annealing(
         model,
         vae_loss,
-        [X, C],
+        [xx, cc],
         learning_rate = args.learning_rate,
+        clipvalue = args.clip_value,
         epochs = args.epochs,
         batch_size = args.batch
     )
 
     _log_msg("Successfully finished")
 
-    model.X = X
+    model.X = xx
+    model.C = cc
+    model.rows = rows
+    model.cols = cols
 
     trace = out.history.get('loss', [])
 
@@ -616,8 +622,12 @@ def write_results(_model, _latent_models, trace, args) :
     _log_msg("Output latent representations")
 
     X = _model.X
+    C = _model.C
+    rows = _model.rows
+    cols = _model.cols
 
     z_mean = _latent_models['mu'].predict(X)
+    z_covar = _latent_models['covar'].predict(C)
     z_logvar = _latent_models['mu_logvar'].predict(X)
     z_library = _latent_models['library'].predict(X)
 
@@ -628,6 +638,7 @@ def write_results(_model, _latent_models, trace, args) :
     weight = _model.get_layer("NBLogRate").weights()
 
     save_array(z_mean, args.out + ".z_mean.zst")
+    save_array(z_covar, args.out + ".z_covar.zst")
     save_array(z_logvar, args.out + ".z_logvar.zst")
     save_array(z_library, args.out + ".z_library.zst")
     save_array(z_spike, args.out + ".z_spike.zst")
@@ -635,89 +646,48 @@ def write_results(_model, _latent_models, trace, args) :
     _log_msg("Output other results")
 
     save_array(weight, args.out + ".weights.zst")
+    save_array(rows, args.out + ".samples.zst")
+    save_array(cols, args.out + ".features.zst")
     save_list(trace, args.out + ".elbo")
     return
 
 
+
 if __name__ == '__main__':
 
-    _desc = r"""
-    Train Negative Binomial VAE
-"""
-
     parser = argparse.ArgumentParser(
-        description = _desc,
-        formatter_class = argparse.ArgumentDefaultsHelpFormatter
+        description = "Train Negative Binomial VAE",
+        formatter_class = argparse.ArgumentDefaultsHelpFormatter,
+        epilog="Contact : Yongjin Park (ypp@mit.edu)"
     )
 
-    parser.add_argument(
-        '--data',
-        default = None,
-        help = "matrix market data file"
-    )
+    parser.add_argument('--data', default = None, help = "matrix market data file")
+    parser.add_argument('--columns_are_samples', default = True, help = "columns are samples")
+    parser.add_argument('--covar', default = None, help = "matrix market data file" )
+    parser.add_argument('--standardize_covar', default = True, help = "standardization of covariates" )
+    parser.add_argument('--standardize_data', default = True, help = "standardization of data" )
+    parser.add_argument('--dlatent', default = "32,256,16", help = "latent dimension for encoding (mu)" )
+    parser.add_argument('--dcovar', default = "16,4", help = "latent dimension for encoding (covariates)" )
+    parser.add_argument('--dlibrary', default = "16,1", help = "latent dimension for encoding (library size)" )
+    parser.add_argument('--batch', default = 100, type = int, help = "batch size" )
+    parser.add_argument('--learning_rate', default = 1e-4, type = float, help = "learning rate" )
+    parser.add_argument('--clip_value', default = 1e-2, type = float, help = "clip value" )
+    parser.add_argument('--epochs', default = 1000, type = int, help = "number of epochs" )
+    parser.add_argument('--dropout', default = 0.1, type = float, help = "Apply dropout to avoid over-fitting" )
+    parser.add_argument('--spike', default = False, type = bool, help = "With spike-and-slab layer" )
 
     parser.add_argument(
-        '--columns_are_samples',
-        default = True,
-        help = "columns are samples"
-    )
-
-    parser.add_argument(
-        '--covar',
-        default = None,
-        help = "matrix market data file"
-    )
-
-    parser.add_argument(
-        '--standardize_covar',
-        default = True,
-        help = "standardization of covariates"
-    )
-
-    parser.add_argument(
-        '--dlatent',
-        default = "32,256,16",
-        help = "latent dimension for encoding (mu)"
-    )
-    parser.add_argument(
-        '--dcovar',
-        default = "16,4",
-        help = "latent dimension for encoding (covariates)"
-    )
-    parser.add_argument(
-        '--dlibrary',
-        default = "16,1",
-        help = "latent dimension for encoding (library size)"
-    )
-    parser.add_argument(
-        '--batch',
-        default = 100,
-        type = int,
-        help = "batch size"
-    )
-    parser.add_argument(
-        '--learning_rate',
-        default = 1e-4,
-        type = float,
-        help = "learning rate"
-    )
-    parser.add_argument(
-        '--epochs',
+        '--sample_cutoff',
         default = 1000,
-        type = int,
-        help = "number of epochs"
-    )
-    parser.add_argument(
-        '--dropout',
-        default = 0.1,
         type = float,
-        help = "Apply dropout to avoid over-fitting"
+        help = "A minimum number of non-zero genes within each sample"
     )
+
     parser.add_argument(
-        '--spike',
-        default = False,
-        type = bool,
-        help = "Adding a spike-and-slab layer (experimental)"
+        '--feature_cutoff',
+        default = .2,
+        type = float,
+        help = "A minimum frequency of features across the retained samples"
     )
 
     parser.add_argument('--out', default=None)
