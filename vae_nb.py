@@ -522,18 +522,14 @@ def preprocess_data(args):
     _log_msg("Read data matrix : %s"%args.data)
 
     if args.columns_are_samples:
-        X = np.array(X.T.todense())
-    else:
-        X = np.array(X.todense())
+        X = X.T
 
     if args.covar is not None:
         C = read_mtx_file(args.covar)
         _log_msg("Read covariate matrix : %s"%args.covar)
 
         if args.columns_are_samples:
-            C = np.array(C.T.todense())
-        else:
-            C = np.array(C.todense())
+            C = C.T
 
         if args.standardize_covar:
             C = standardize_columns(C)
@@ -669,7 +665,7 @@ if __name__ == '__main__':
     parser.add_argument('--columns_are_samples', default = True, help = "columns are samples")
     parser.add_argument('--covar', default = None, help = "matrix market data file" )
     parser.add_argument('--standardize_covar', default = True, help = "standardization of covariates" )
-    parser.add_argument('--standardize_data', default = True, help = "standardization of data" )
+    parser.add_argument('--standardize_data', default = False, help = "standardization of data" )
     parser.add_argument('--dlatent', default = "32,256,16", help = "latent dimension for encoding (mu)" )
     parser.add_argument('--dcovar', default = "16,4", help = "latent dimension for encoding (covariates)" )
     parser.add_argument('--dlibrary', default = "16,1", help = "latent dimension for encoding (library size)" )

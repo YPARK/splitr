@@ -7,106 +7,19 @@ import scipy as sp
 import numpy as np
 import shlex
 import subprocess
+import mmutil as mm
 from scipy.sparse import csr_matrix
 
 sys.path.insert(1, os.path.dirname(__file__))
 
 from util import _log_msg
 
-__all__ = ["read_mtx_cmd",
-           "read_mtx_file",
+__all__ = ["read_mtx_file",
            "save_array",
            "save_list"]
 
-def read_mtx_cmd(cmd, **kwargs):
-    """
-    Read a matrix market format by shell command
-    """
-
-    verbose = kwargs.get('verbose',True)
-
-    cmd = shlex.split(cmd)
-
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-
-    _log_msg('Start reading the file: %s'%cmd)
-
-    line = proc.stdout.readline()
-
-    _check, _, _format, _, sym = [x.strip().decode('utf-8') for x in line.split()]
-
-    is_matrix_market = (
-        _check.startswith('%%MatrixMarket')
-        or _check.startswith('%MatrixMarket')
-    )
-
-    if(not is_matrix_market):
-        raise Exception("Unsupported file type")
-
-    if(_format != 'coordinate'):
-        raise Exception("Unsupported file format")
-
-    # skip comment lines
-    while line.startswith(b'%'):
-        line = proc.stdout.readline()
-
-    _nrow, _ncol, _nelem = [int(x.strip()) for x in line.split()]
-
-    _log_msg('[%d x %d]'%(_nrow, _ncol))
-
-    m = 0
-
-    ii = np.zeros(_nelem, dtype=np.intc)
-    jj = np.zeros(_nelem, dtype=np.intc)
-    vv = np.zeros(_nelem, dtype=np.float32)
-
-    while True:
-        line = proc.stdout.readline()
-
-        if line == '' and proc.poll() is not None:
-            break
-
-        if len(line) < 1: break
-
-        larr = line.split()
-
-        if len(larr) is not 3:
-            _log_msg('corrupted in line %d'%(m+1))
-            break
-
-        ii[m] = int(larr[0])
-        jj[m] = int(larr[1])
-        vv[m] = float(larr[2])
-        m += 1
-        if verbose is True:
-            if m%100000 is 99999:
-                _log_msg('%10d/%10d'%(m+1, _nelem))
-
-    if(m != _nelem):
-        raise Exception("Found a different number of elements")
-
-    _log_msg('Finished reading the file: %s'%(' '.join(cmd)))
-
-    ii -= 1
-    jj -= 1
-
-    ret = csr_matrix((vv, (ii, jj)),
-                     shape=(_nrow, _ncol),
-                     dtype=np.float32)
-
-    proc.terminate()
-    return ret
-
-def read_mtx_file(filename, **kwargs):
-
-    if filename.endswith('.zst'):
-        cmd = "zstd -dc "
-    elif filename.endswith('.gz'):
-        cmd = "gzip -dc "
-    else:
-        cmd = "cat "
-
-    return read_mtx_cmd(cmd + filename, **kwargs)
+def read_mtx_file(filename):
+    return mm.read_numpy(filename)
 
 def save_array(arr, fname):
 
