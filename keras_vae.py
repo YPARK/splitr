@@ -11,6 +11,7 @@ from keras.regularizers import l2
 from keras import losses
 from keras import optimizers
 from keras.callbacks import Callback
+import numpy as np
 
 ################################################################################
 # math functions not fully implemented in the current version of Keras backend #

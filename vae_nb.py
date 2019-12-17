@@ -630,24 +630,23 @@ def write_results(_model, _latent_models, trace, args) :
     z_covar = _latent_models['covar'].predict(C)
     z_logvar = _latent_models['mu_logvar'].predict(X)
     z_library = _latent_models['library'].predict(X)
-
-    z_spike = np.array([])
+    z_spike = np.array([[]])
     if _latent_models['spike'] is not None:
         z_spike = _latent_models['spike'].predict(X)
 
     weight = _model.get_layer("NBLogRate").weights()
 
-    save_array(z_mean, args.out + ".z_mean.zst")
-    save_array(z_covar, args.out + ".z_covar.zst")
-    save_array(z_logvar, args.out + ".z_logvar.zst")
-    save_array(z_library, args.out + ".z_library.zst")
-    save_array(z_spike, args.out + ".z_spike.zst")
+    save_array(z_mean, args.out + ".z_mean.gz")
+    save_array(z_covar, args.out + ".z_covar.gz")
+    save_array(z_logvar, args.out + ".z_logvar.gz")
+    save_array(z_library, args.out + ".z_library.gz")
+    save_array(z_spike, args.out + ".z_spike.gz")
 
     _log_msg("Output other results")
 
-    save_array(weight, args.out + ".weights.zst")
-    save_array(rows, args.out + ".samples.zst")
-    save_array(cols, args.out + ".features.zst")
+    save_array(weight, args.out + ".weights.gz")
+    save_array(rows, args.out + ".samples.gz")
+    save_array(cols, args.out + ".features.gz")
     save_list(trace, args.out + ".elbo")
     return
 

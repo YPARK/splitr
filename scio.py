@@ -19,45 +19,31 @@ __all__ = ["read_mtx_file",
            "save_list"]
 
 def read_mtx_file(filename):
-    return mm.read_numpy(filename)
+    return mm.read_triplets_numpy(filename)
 
 def save_array(arr, fname):
 
     assert(isinstance(arr, np.ndarray))
 
-    do_zstd = False
-    do_gzip = False
-
     if len(fname) > 4 and fname[-4:] == ".zst":
         fname = fname[:-4]
-        do_zstd = True
+        fmt = "%d" if(arr.dtype == np.int) else "%.4f"
 
-    if len(fname) > 3 and fname[-4:] == ".gz":
-        fname = fname[:-3]
-        do_gzip = True
+        np.savetxt(
+            fname=fname,
+            X=arr,
+            fmt=fmt,
+            delimiter="\t"
+        )
 
-    fmt = "%d" if(arr.dtype == np.int) else "%.4f"
-
-    np.savetxt(
-        fname=fname,
-        X=arr,
-        fmt=fmt,
-        delimiter="\t"
-    )
-
-    if do_zstd :
         cmd = "zstd -f %s"%(fname)
         out = fname + ".zst"
         proc = subprocess.call(cmd, shell=True)
         if os.path.exists(out):
             os.remove(fname)
 
-    if do_gzip :
-        cmd = "gzip %s"%(fname)
-        out = fname + ".gz"
-        proc = subprocess.call(cmd, shell=True)
-        if os.path.exists(out):
-            os.remove(fname)
+    else:
+        _ = mm.write_numpy(arr, fname)
 
     return
 
