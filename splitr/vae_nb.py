@@ -651,8 +651,6 @@ def write_results(_model, _latent_models, trace, args) :
 
     return
 
-
-
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(

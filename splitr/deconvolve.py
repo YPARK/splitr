@@ -13,7 +13,6 @@ from util import *
 from np_util import *
 from mcmc import *
 
-## @jit(nopython=True)
 def log_lik_nb(
         y         : np.ndarray,   # Data: Bulk expression (m x 1) in R+
         X         : np.ndarray,   # Data: Reference panel (m x cell-types) in R+
