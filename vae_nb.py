@@ -644,10 +644,11 @@ def write_results(_model, _latent_models, trace, args) :
 
     _log_msg("Output other results")
 
-    save_array(weight, args.out + ".weights.gz")
-    save_array(rows, args.out + ".samples.gz")
-    save_array(cols, args.out + ".features.gz")
     save_list(trace, args.out + ".elbo")
+    save_array(weight, args.out + ".weights.gz")
+    save_list(rows.tolist(), args.out + ".samples.gz")
+    save_list(cols.tolist(), args.out + ".features.gz")
+
     return
 
 

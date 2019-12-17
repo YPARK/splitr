@@ -8,6 +8,7 @@ import numpy as np
 import shlex
 import subprocess
 import mmutil as mm
+import gzip
 from scipy.sparse import csr_matrix
 
 sys.path.insert(1, os.path.dirname(__file__))
@@ -22,35 +23,21 @@ def read_mtx_file(filename):
     return mm.read_triplets_numpy(filename)
 
 def save_array(arr, fname):
-
     assert(isinstance(arr, np.ndarray))
-
-    if len(fname) > 4 and fname[-4:] == ".zst":
-        fname = fname[:-4]
-        fmt = "%d" if(arr.dtype == np.int) else "%.4f"
-
-        np.savetxt(
-            fname=fname,
-            X=arr,
-            fmt=fmt,
-            delimiter="\t"
-        )
-
-        cmd = "zstd -f %s"%(fname)
-        out = fname + ".zst"
-        proc = subprocess.call(cmd, shell=True)
-        if os.path.exists(out):
-            os.remove(fname)
-
-    else:
-        _ = mm.write_numpy(arr, fname)
-
+    assert(len(arr.shape) == 2)
+    _ = mm.write_numpy(arr, fname)
     return
 
 def save_list(ll, fname):
-    with open(fname, 'w') as fh:
-        _out = '\n'.join(map(lambda x: '%.4f'%x, ll))
-        fh.write(_out)
-        _log_msg("Wrote %s"%fname)
+
+    if fname.endswith('.gz'):
+        fh = gzip.open(fname, 'wb')
+    else:
+        fh = open(fname, 'wb')
+
+    _out = str.encode('\n'.join(map(lambda x: '%.4f'%x, ll)))
+    fh.write(_out)
+    _log_msg("Wrote %s"%fname)
+    fh.close()
 
     return
