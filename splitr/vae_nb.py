@@ -300,21 +300,6 @@ def build_nb_model(
 
         _log_msg("With spike-slab latent states")
 
-
-    ##############################################
-    # An additional path from covariates to mean #
-    ##############################################
-
-    x_covar = Input(shape=(Dc,))
-    z_covar  = Dense(
-        units=dims_encoding[-1],
-        name='z_covar',
-        activity_regularizer=l2(l2_penalty)
-    )(x_covar)
-
-    # Simply combine both effects
-    z_mu_covar = layers.add([z_mu, z_covar], name='z_mu_covar')
-
     ##################################
     # 2. Path from x to library size #
     # Approximation of q(lib|x)      #
@@ -353,10 +338,23 @@ def build_nb_model(
     ####################
 
     log_rate_layer = NBLogRate(D, name="NBLogRate")
-    x_mu = log_rate_layer([z_mu_covar, x_lib])
+    x_mu = log_rate_layer([z_mu, x_lib])
+
+    #################################################
+    # 3. An additional path from covariates to mean #
+    #################################################
+
+    x_covar = Input(shape=(Dc,))
+    _x_mu_covar  = Dense(
+        units=D,
+        name='_x_mu_covar',
+        activity_regularizer=l2(l2_penalty)
+    )(x_covar)
+
+    x_mu_covar = layers.add([x_mu, _x_mu_covar], name='x_mu_covar')
 
     #############################
-    # 3. Path form x to q(nu|x) #
+    # 4. Path form x to q(nu|x) #
     #############################
 
     x_nu = ConstBias(
@@ -369,7 +367,10 @@ def build_nb_model(
     # synthesize the training model #
     #################################
 
-    x_out = layers.concatenate([x_mu, x_nu], axis=-1, name='x_out')
+    x_out = layers.concatenate(
+        [x_mu_covar, x_nu],
+        axis=-1,
+        name='x_out')
 
     model = keras.Model([x_in, x_covar], x_out)
 
