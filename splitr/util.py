@@ -45,10 +45,10 @@ def normalize_X(_X, _target=None):
         if _target is None else _target
     )
     _per_cell += (_per_cell == 0)
-    _per_cell /= _target.T
 
+    d = _X.shape[0]
     ret = _X.copy()
-    ret /= _per_cell
+    ret = ret / np.reshape(_per_cell, (d,1)) * _target
 
     return ret
 

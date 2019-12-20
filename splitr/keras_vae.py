@@ -7,7 +7,7 @@ from keras import backend as K
 from keras.layers import Input, Dense, Lambda, Dropout, BatchNormalization
 from keras.layers import Layer
 from keras import layers
-from keras.regularizers import l2
+from keras.regularizers import l2, l1
 from keras import losses
 from keras import optimizers
 from keras.callbacks import Callback
@@ -78,6 +78,7 @@ class GaussianStoch(Layer):
     def call(self, x):
         assert isinstance(x, list)
         mu, logvar = x
+        logvar = K.clip(logvar, -5.0, 5.0) # to be safe
         batch = K.shape(mu)[0]
         dim = K.int_shape(mu)[1]
         epsilon = K.random_normal(shape=(batch, dim), mean=0.0, stddev=1.0)
@@ -127,11 +128,23 @@ def add_gaussian_stoch_layer(hh, **kwargs):
 
     d = K.int_shape(hh)[1]
     latent_dim = kwargs.get('latent_dim', d)
+    l1_penalty = kwargs.get('l1_penalty', 1e-2)
 
     _name_it = keras_name_func(**kwargs)
 
-    mu = Dense(latent_dim, activation='linear', name=_name_it('mu'))(hh)
-    logvar = Dense(latent_dim, activation='linear', name=_name_it('sig'))(hh)
+    mu = Dense(
+        latent_dim,
+        activation='linear',
+        activity_regularizer=l1(l1_penalty),
+        name=_name_it('mu')
+    )(hh)
+
+    logvar = Dense(
+        latent_dim,
+        activation='linear',
+        activity_regularizer=l1(l1_penalty),
+        name=_name_it('sig')
+    )(hh)
     z_stoch = GaussianStoch(output_dim=(latent_dim,), name=_name_it('stoch'))([mu,logvar])
 
     return z_stoch, mu, logvar
@@ -179,7 +192,11 @@ class ConstBias(Layer):
 ###############################
 
 class TransformIAF(Layer):
-    def __init__(self, output_dim, **kwargs):
+    def __init__(
+            self,
+            output_dim,
+            **kwargs
+    ):
         self.output_dim = output_dim
         super(TransformIAF, self).__init__(**kwargs)
 
@@ -191,78 +208,109 @@ class TransformIAF(Layer):
     def build(self, input_shape):
         super(TransformIAF, self).build(input_shape)
 
-def add_iaf_transformation(hh, z_prev, **kwargs):
+class TransformIAFVar(Layer):
+    def __init__(
+            self,
+            output_dim,
+            sig_min : float,
+            **kwargs
+    ):
+        self.output_dim = output_dim
+        self.sig_min = sig_min
+        super(TransformIAFVar, self).__init__(**kwargs)
+
+    def call(self, x):
+        assert isinstance(x, list)
+        sig, logvar_prev = x
+        return logvar_prev - 2.0 * K.log(sig + self.sig_min)
+
+    def build(self, input_shape):
+        super(TransformIAFVar, self).build(input_shape)
+
+def add_iaf_transformation(hh, z_prev, mu_prev, logvar_prev, **kwargs):
     """Inverse Autoregressive Flow (a helper function)
     """
 
     rank = kwargs.get('rank',None)
     act = kwargs.get('act','linear')
-    pmin = kwargs.get('pmin',1e-2)
-    l2_penalty = kwargs.get('l2_penalty', 1e-4)
+    pmin = kwargs.get('pmin',1e-4)
+    l1_penalty = kwargs.get('l1_penalty', 1e-4)
 
     _name_it = keras_name_func(**kwargs)
 
     d = K.int_shape(z_prev)[1]
 
-    ## We want new proposal (mu) to be independent of the previous ones
-    ## hh_z = concatenate([hh, z_prev], axis=1, name=_name_it('iaf_concat'))
+    # hh_z = layers.concatenate(
+    #     [hh, z_prev],
+    #     axis=1,
+    #     name=_name_it('iaf_concat')
+    # )
 
     mu = Dense(
         d,
         activation=act,
-        activity_regularizer=l2(l2_penalty),
+        activity_regularizer=l1(l1_penalty),
         name=_name_it('mu')
     )(hh)
-    
+
     sig = Dense(
         d,
-        activation=KMath.sigmoid,
-        activity_regularizer=l2(l2_penalty),
+        activation='sigmoid',
+        activity_regularizer=l1(l1_penalty),
         name=_name_it('sig')
     )(hh)
 
-    z_next = TransformIAF(output_dim=(d,), name=_name_it('z'))([mu,sig,z_prev])
+    z_next = TransformIAF(
+        output_dim=(d,),
+        name=_name_it('z')
+    )([mu,sig,z_prev])
 
-    kl_loss = K.sum(K.log(sig), axis=-1)
-    return z_next, mu, sig, kl_loss
+    mu_next = TransformIAF(
+        output_dim=(d,),
+        name=_name_it('mean')
+    )([mu,sig,mu_prev])
+
+    logvar_next = TransformIAFVar(
+        output_dim=(d,),
+        name=_name_it('logvar'),
+        sig_min=pmin
+    )([sig,logvar_prev])
+
+    kl_loss = K.sum(K.log(sig + pmin), axis=-1)
+
+    return z_next, mu_next, logvar_next, kl_loss
 
 def build_iaf_stack(input_hidden, _name, **kwargs):
     """Inverse Autoregressive Flow
 
     # arguments
-        input_hidden : the input of IAF layer
-        _name        : must give a name
-        num_trans    : number of transformations
+        input_hidden  : the input of IAF layer
+        _name         : must give a name
+        num_trans     : number of transformations
 
     # options (**kwargs)
-        latent_dim   : the dimension of hidden units
-        pmin         : the minimum of gating functions (default: 1e-4)
+        latent_dim    : the dimension of hidden units
+        pmin          : the minimum of gating functions (default: 1e-4)
 
     # returns
-        z_layers     : latent variables
-        mu_layers    : mean change variables
-        sig_layers   : variance gating variables
-        kl_loss      : KL divergence loss
+        z_layers      : latent variables
+        mu_layers     : mean change variables
+        logvar_layers : variance gating variables
+        kl_loss       : KL divergence loss
     """
 
     _stoch = add_gaussian_stoch_layer(input_hidden, name=_name, **kwargs)
-    z, mu0, sig0, kl_loss = _stoch
-
-    z_layers = [z]
-    mu_layers = [mu0]
-    sig_layers = [sig0]
+    z, mu, logvar = _stoch
+    kl_loss = gaussian_kl_loss(mu, logvar)
 
     num_trans = kwargs.get('num_trans', 1)
 
     for l in range(1, num_trans + 1):
         hdr = '%s_%d'%(_name, l)
-        z, mu, sig, _kl = add_iaf_transformation(input_hidden, z, name=hdr, **kwargs)
-        z_layers.append(z)
-        mu_layers.append(mu)
-        sig_layers.append(sig)
+        z, mu, logvar, _kl = add_iaf_transformation(input_hidden, z, mu, logvar, name=hdr, **kwargs)
         kl_loss -= _kl
 
-    return z_layers, mu_layers, sig_layers, kl_loss
+    return z, mu, logvar, kl_loss
 
 ##################
 # Gumbel softmax #
@@ -422,4 +470,3 @@ class WeightedSum(Layer):
         assert isinstance(input_shape, list)
         shape_a, shape_b = input_shape
         return (shape_a[0], self.units)
-

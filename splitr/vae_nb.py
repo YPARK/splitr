@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(1, os.path.dirname(__file__))
 
-from util import _log_msg, filter_zero_rows_cols
+from util import *
 from scio import *
 from keras_vae import *
 from np_util import gammaln as _lgamma
@@ -35,11 +35,11 @@ class NBLibSize(Layer):
 
 class NBOverDisp(Layer):
     def __init__(self, **kwargs):
-        self.eps = kwargs.get('eps', 1e-8)
+        self.a0 = kwargs.get('a0', 1e-8)
         super(NBOverDisp, self).__init__(**kwargs)
 
     def call(self, x):
-        return 1.0 / (self.eps + softplus(-x))
+        return 1.0 / (self.a0 + softplus(-x))
 
     def build(self, input_shape):
         super(NBOverDisp, self).build(input_shape)
@@ -65,9 +65,15 @@ class NBLogRate(Layer):
 
     where we give constraints on W s.t. sum_g W(g,k) = 1
     """
-    def __init__(self, units, init_val : float = -5.0, **kwargs):
+    def __init__(
+            self,
+            units,
+            init_val : float = -5.0,
+            max_log_lib : float = 15.0,
+            **kwargs):
         self.units = units
         self.init_val = init_val
+        self.max_log_lib = max_log_lib
         super(NBLogRate, self).__init__(**kwargs)
 
     def build(self, input_shape):
@@ -78,7 +84,7 @@ class NBLogRate(Layer):
         self.kernel = self.add_weight(
             shape=(d, self.units),
             name='weight',
-            initializer='glorot_normal',
+            initializer='glorot_uniform',
             trainable=True
         )
 
@@ -100,8 +106,10 @@ class NBLogRate(Layer):
         assert isinstance(x, list)
         z, lam = x
 
-        W = self.kernel
+        # To gain stability
+        lam = K.clip(lam, 0.0, self.max_log_lib)
 
+        W = self.kernel
         ret = K.dot(z, W) + K.dot(lam, self.ones_D)
         ret = K.bias_add(ret, self.bias, data_format='channels_last')
         return ret
@@ -131,7 +139,7 @@ def nb_loss(
         x_obs,             # observed data
         x_params,          # estimated parameters
         D: int,            # dimensionality
-        a0: float = 1e-6,  # minimum inverse over-dispersion
+        a0: float = 1e-4,   # minimum inverse over-dispersion
         tau : float = 1e-2 # hyperparameter for over-dispersion
 ):
     """
@@ -181,6 +189,7 @@ def nb_loss(
     x_nu = x_params[:, D:(2*D)]
 
     alpha = softplus(-x_nu) + a0
+    alpha = K.clip(alpha, a0, 1e4)
 
     neg_log_prior = (
         (tau - 1.0) * K.log(alpha)
@@ -197,11 +206,7 @@ def nb_loss(
         + x_obs * softplus(-x_mu)
     )
 
-    ret = (
-        neg_log_lik
-        + neg_log_prior
-    )
-
+    ret = neg_log_lik + neg_log_prior
     return K.sum(ret, -1)
 
 ###########################
@@ -213,6 +218,7 @@ def build_nb_model(
         Dc,
         dims_encoding,
         dims_encoding_lib,
+        iaf_trans,
         **kwargs
 ):
     """
@@ -227,8 +233,8 @@ def build_nb_model(
 
     # options
 
-        l2_penalty        : L2 penalty for the mean model (1e-2)
-        nu_l2_penalty     : L2 penalty for the variance model (1e-2)
+        l1_penalty        : L1 penalty for the mean model (1e-2)
+        nu_l1_penalty     : L1 penalty for the variance model (1e-2)
         nn_dropout_rate   : neural network dropout rate (0.1)
 
         a0                : minimum inverse over-dispersion
@@ -242,10 +248,12 @@ def build_nb_model(
 
     """
 
-    l2_penalty = kwargs.get('l2_penalty', 1e-2)
-    l2_penalty_nu = kwargs.get('nu_l2_penalty', 1e-2)
+    l1_penalty = kwargs.get('l1_penalty', 1e-2)
+    l1_penalty_nu = kwargs.get('nu_l1_penalty', 1e-2)
     nn_dropout = kwargs.get('nn_dropout_rate', .0)
-    nu_bias_init = kwargs.get('dispersion_bias', -4.0)
+    nu_bias_init = kwargs.get('dispersion_bias', -0.0)
+    _max_log_lib = math.log(kwargs.get('lib_target', 1e4))
+    iaf_concat = kwargs.get('iaf_concat', True)
 
     x_in = Input(shape=(D,))
     x_log = Log1P()(x_in)
@@ -259,14 +267,14 @@ def build_nb_model(
 
     for i,d in enumerate(dims_encoding):
 
-        hh = BatchNormalization(name = 'mu_batch_norm_%d'%(i+1))(hh)
-
         hh = Dense(
             d,
             activation='relu',
-            activity_regularizer=l2(l2_penalty),
+            activity_regularizer=l1(l1_penalty),
             name='mu_%d'%(i+1)
         )(hh)
+
+        hh = BatchNormalization(name = 'mu_batch_norm_%d'%(i+1))(hh)
 
         if nn_dropout > 0.0 and nn_dropout < 1.0:
             _name = 'mu_dropout_%d'%(i+1)
@@ -274,8 +282,25 @@ def build_nb_model(
 
     d = dims_encoding[-1]
 
-    _temp = add_gaussian_stoch_layer(hh, latent_dim = d, name = 'z_mu_stoch')
-    z_mu, z_mu_mean, z_mu_logvar = _temp
+    if iaf_trans > 0:
+
+        IAF = build_iaf_stack(
+            hh,
+            _name="IAF_MU",
+            latent_dim = d,
+            num_trans = iaf_trans,
+            concat_h_z = iaf_concat
+        )
+        z_mu, z_mu_mean, z_mu_logvar, kl_mu  = IAF
+
+    else:
+        _temp = add_gaussian_stoch_layer(
+            hh,
+            latent_dim = d,
+            name = 'z_mu_stoch'
+        )
+        z_mu, z_mu_mean, z_mu_logvar = _temp
+        kl_mu = gaussian_kl_loss(z_mu_mean, z_mu_logvar)
 
     ##################
     # spike-and-slap #
@@ -300,6 +325,20 @@ def build_nb_model(
 
         _log_msg("With spike-slab latent states")
 
+    ##############################################
+    # An additional path from covariates to mean #
+    ##############################################
+
+    x_covar = Input(shape=(Dc,))
+
+    z_covar  = Dense(
+        units = dims_encoding[-1],
+        name = 'z_covar',
+        activity_regularizer = l1(l1_penalty)
+    )(x_covar)
+
+    z_mu_covar = layers.add([z_mu, z_covar], name='z_mu_covar')
+
     ##################################
     # 2. Path from x to library size #
     # Approximation of q(lib|x)      #
@@ -309,14 +348,14 @@ def build_nb_model(
 
     for i,d in enumerate(dims_encoding_lib):
 
-        hh = BatchNormalization(name = 'lib_batch_norm_%d'%(i+1))(hh)
-
         hh_lib = Dense(
             d,
             activation='relu',
-            activity_regularizer=l2(l2_penalty),
+            activity_regularizer=l1(l1_penalty),
             name='lib_%d'%(i+1)
         )(hh_lib)
+
+        hh_lib = BatchNormalization(name = 'lib_batch_norm_%d'%(i+1))(hh_lib)
 
         if nn_dropout > 0.0 and nn_dropout < 1.0:
             _name = 'lib_dropout_%d'%(i+1)
@@ -326,35 +365,31 @@ def build_nb_model(
 
     _temp = add_gaussian_stoch_layer(hh_lib, latent_dim = d, name='z_lib_stoch')
     z_lib, z_lib_mean, z_lib_logvar = _temp
+    kl_lib = gaussian_kl_loss(z_lib_mean, z_lib_logvar)
+
+    x_lib_l1 = 1.0
+
+    _log_msg("apply strong L1 on library size estimation: %f"%x_lib_l1)
 
     x_lib = Dense(
         units = 1,
         name = 'x_lib',
-        activity_regularizer=l2(l2_penalty)
+        activity_regularizer=l1(x_lib_l1)
     )(z_lib)
 
     ####################
     # combine log rate #
     ####################
 
-    log_rate_layer = NBLogRate(D, name="NBLogRate")
-    x_mu = log_rate_layer([z_mu, x_lib])
-
-    #################################################
-    # 3. An additional path from covariates to mean #
-    #################################################
-
-    x_covar = Input(shape=(Dc,))
-    _x_mu_covar  = Dense(
-        units=D,
-        name='_x_mu_covar',
-        activity_regularizer=l2(l2_penalty)
-    )(x_covar)
-
-    x_mu_covar = layers.add([x_mu, _x_mu_covar], name='x_mu_covar')
+    log_rate_layer = NBLogRate(
+        D,
+        name="NBLogRate",
+        max_log_lib=_max_log_lib
+    )
+    x_mu = log_rate_layer([z_mu_covar, x_lib])
 
     #############################
-    # 4. Path form x to q(nu|x) #
+    # 3. Path form x to q(nu|x) #
     #############################
 
     x_nu = ConstBias(
@@ -368,7 +403,7 @@ def build_nb_model(
     #################################
 
     x_out = layers.concatenate(
-        [x_mu_covar, x_nu],
+        [x_mu, x_nu],
         axis=-1,
         name='x_out')
 
@@ -380,7 +415,6 @@ def build_nb_model(
 
     latent_mu = keras.Model(x_in, z_mu_mean)
     latent_logvar = keras.Model(x_in, z_mu_logvar)
-    latent_covar = keras.Model(x_covar, z_covar)
 
     ################
     # library size #
@@ -396,15 +430,12 @@ def build_nb_model(
 
     model.gumbel_temperature = gumbel_temperature
 
-    # regularization or regression to prior
-    kl_mu = gaussian_kl_loss(z_mu_mean, z_mu_logvar)
-    kl_lib = gaussian_kl_loss(z_lib_mean, z_lib_logvar)
     kl_spike = 0.0
 
     if kwargs.get('with_spike', False):
         kl_spike = binary_gumbel_kl_loss(z_spike, z_spike_logits)
 
-    a0 = kwargs.get('a0', 1e-6)  # minimum inverse over-dispersion
+    a0 = kwargs.get('a0', 1e-2)  # minimum inverse over-dispersion
     tau = kwargs.get('tau', 1e-2)# hyperparameter
 
     def vae_loss(_weight):
@@ -418,7 +449,6 @@ def build_nb_model(
     latent_models = {
         'mu'        : latent_mu,
         'mu_logvar' : latent_logvar,
-        'covar'     : latent_covar,
         'spike'     : latent_spike,
         'library'   : libsize
     }
@@ -437,7 +467,7 @@ class Annealing(Callback):
             gumbel_temperature,
             gumbel_rate : float = 1e-2,
             kl_base : float = 1e-2,
-            kl_rate : float = 1e-1
+            kl_rate : float = 1.0
     ):
         self.kl_base = kl_base
         self.kl_rate = kl_rate
@@ -486,6 +516,9 @@ def train_nb_vae_kl_annealing(_model, _loss, xx_cc : list, **kwargs):
     clipval = kwargs.get('clipvalue', lr)
     epochs = kwargs.get('epochs', 100)
 
+    _gumbel_rate = kwargs.get('gumbel_rate', 1e-2)
+    _kl_rate = kwargs.get('kl_rate', 1.0)
+
     opt = optimizers.adam(lr=lr, clipvalue=clipval)
 
     _model.compile(
@@ -497,7 +530,7 @@ def train_nb_vae_kl_annealing(_model, _loss, xx_cc : list, **kwargs):
         xx_cc,
         xx,
         epochs = epochs,
-        callbacks=[Annealing(kl_weight, gumbelT)]
+        callbacks=[Annealing(kl_weight, gumbelT, kl_rate=_kl_rate, gumbel_rate = _gumbel_rate)]
     )
 
     return trace
@@ -558,11 +591,7 @@ def preprocess_data(args):
     cc = C[rows, :]
 
     if args.standardize_data:
-        xx_ = np.log(xx + 1.0)
-        xx_ = standardize_columns(xx_)
-        xx_[xx_ < -4.0] = -4.0
-        xx_[xx_ > 4.0] = 4.0
-        xx = np.exp(xx_)
+        xx = normalize_X(xx, args.std_target)
     else:
         xx[~np.isfinite(xx)] = 0.0
 
@@ -580,6 +609,7 @@ def run(args):
     #######################
 
     _log_msg("Building a model")
+    _log_msg("Min 1/overdispersion: %.2e"%args.a0)
 
     model, vae_loss, latent_models = build_nb_model(
         D = xx.shape[1],
@@ -587,7 +617,10 @@ def run(args):
         dims_encoding = _dims_latent,
         dims_encoding_lib = _dims_library,
         with_spike = args.spike,
-        nn_dropout_rate = args.dropout
+        nn_dropout_rate = args.dropout,
+        a0 = args.a0,
+        lib_target = args.std_target,
+        iaf_trans = args.iaf_trans
     )
 
     plot_model(model, args.out + "_model.png")
@@ -601,7 +634,8 @@ def run(args):
         learning_rate = args.learning_rate,
         clipvalue = args.clip_value,
         epochs = args.epochs,
-        batch_size = args.batch
+        batch_size = args.batch,
+        kl_rate=args.kl_rate
     )
 
     _log_msg("Successfully finished")
@@ -628,7 +662,6 @@ def write_results(_model, _latent_models, trace, args) :
     cols = _model.cols
 
     z_mean = _latent_models['mu'].predict(X)
-    z_covar = _latent_models['covar'].predict(C)
     z_logvar = _latent_models['mu_logvar'].predict(X)
     z_library = _latent_models['library'].predict(X)
     z_spike = np.array([[]])
@@ -638,7 +671,6 @@ def write_results(_model, _latent_models, trace, args) :
     weight = _model.get_layer("NBLogRate").weights()
 
     save_array(z_mean, args.out + ".z_mean.gz")
-    save_array(z_covar, args.out + ".z_covar.gz")
     save_array(z_logvar, args.out + ".z_logvar.gz")
     save_array(z_library, args.out + ".z_library.gz")
     save_array(z_spike, args.out + ".z_spike.gz")
@@ -652,56 +684,3 @@ def write_results(_model, _latent_models, trace, args) :
 
     return
 
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(
-        description = "Train Negative Binomial VAE",
-        formatter_class = argparse.ArgumentDefaultsHelpFormatter,
-        epilog="Contact : Yongjin Park (ypp@mit.edu)"
-    )
-
-    parser.add_argument('--data', default = None, help = "matrix market data file")
-    parser.add_argument('--columns_are_samples', default = True, help = "columns are samples")
-    parser.add_argument('--covar', default = None, help = "matrix market data file" )
-    parser.add_argument('--standardize_covar', default = True, help = "standardization of covariates" )
-    parser.add_argument('--standardize_data', default = True, help = "standardization of data" )
-    parser.add_argument('--dlatent', default = "32,256,16", help = "latent dimension for encoding (mu)" )
-    parser.add_argument('--dcovar', default = "16,4", help = "latent dimension for encoding (covariates)" )
-    parser.add_argument('--dlibrary', default = "16,1", help = "latent dimension for encoding (library size)" )
-    parser.add_argument('--batch', default = 100, type = int, help = "batch size" )
-    parser.add_argument('--learning_rate', default = 1e-4, type = float, help = "learning rate" )
-    parser.add_argument('--clip_value', default = 1e-2, type = float, help = "clip value" )
-    parser.add_argument('--epochs', default = 1000, type = int, help = "number of epochs" )
-    parser.add_argument('--dropout', default = 0.1, type = float, help = "Apply dropout to avoid over-fitting" )
-    parser.add_argument('--spike', default = False, type = bool, help = "With spike-and-slab layer" )
-
-    parser.add_argument(
-        '--sample_cutoff',
-        default = 1000,
-        type = float,
-        help = "A minimum number of non-zero genes within each sample"
-    )
-
-    parser.add_argument(
-        '--feature_cutoff',
-        default = .2,
-        type = float,
-        help = "A minimum frequency of features across the retained samples"
-    )
-
-    parser.add_argument('--out', default=None)
-
-    args = parser.parse_args()
-
-    if args.data is None:
-        _log_msg("Need data to fit the model!")
-        exit(1)
-
-    if args.out is None:
-        _log_msg("Provide the output header!")
-        exit(1)
-    model, latent_models, trace = run(args)
-
-    write_results(model, latent_models, trace, args)
-
-    exit(0)

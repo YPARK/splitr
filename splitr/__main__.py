@@ -49,15 +49,19 @@ if __name__ == '__main__':
     parser.add_argument('--columns_are_samples', default = True, help = "columns are samples")
     parser.add_argument('--covar', default = None, help = "matrix market data file" )
     parser.add_argument('--standardize_covar', default = True, help = "standardization of covariates" )
-    parser.add_argument('--standardize_data', default = False, help = "standardization of data" )
     parser.add_argument('--dlatent', default = "32,256,16", help = "latent dimension for encoding (mu)" )
     parser.add_argument('--dlibrary', default = "16,1", help = "latent dimension for encoding (library size)" )
     parser.add_argument('--batch', default = 100, type = int, help = "batch size" )
     parser.add_argument('--learning_rate', default = 1e-4, type = float, help = "learning rate" )
     parser.add_argument('--clip_value', default = 1e-2, type = float, help = "clip value" )
     parser.add_argument('--epochs', default = 1000, type = int, help = "number of epochs" )
+    parser.add_argument('--iaf_trans', default = 4, type = int, help = "number of IAF transformations" )
     parser.add_argument('--dropout', default = 0.1, type = float, help = "Apply dropout to avoid over-fitting" )
     parser.add_argument('--spike', default = False, type = bool, help = "With spike-and-slab layer" )
+    parser.add_argument('--kl_rate', default = 0.5, type = float, help = "KL term annealing rate" )
+    parser.add_argument('--standardize_data', default = True, help = "standardization of data" )
+    parser.add_argument('--std_target', default = 1e4, type = float, help = "The targeting count of standardization procedure" )
+    parser.add_argument('--a0', default = 1e-4, type = float, help = "Minimum inverse overdispersion" )
 
     parser.add_argument(
         '--sample_cutoff',
