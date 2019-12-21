@@ -17,8 +17,6 @@ from scio import *
 from keras_vae import *
 from np_util import gammaln as _lgamma
 
-from keras.utils import plot_model
-
 ###################################
 # construct negative binomial VAE #
 ###################################
@@ -107,10 +105,8 @@ class NBLogRate(Layer):
         z, lam = x
 
         # To gain stability
-        lam = K.clip(lam, 0.0, self.max_log_lib)
-
-        W = self.kernel
-        ret = K.dot(z, W) + K.dot(lam, self.ones_D)
+        lam_ = K.clip(lam, 0.0, self.max_log_lib)
+        ret = K.dot(z, self.kernel) + K.dot(lam_, self.ones_D)
         ret = K.bias_add(ret, self.bias, data_format='channels_last')
         return ret
 
@@ -253,7 +249,7 @@ def build_nb_model(
     nn_dropout = kwargs.get('nn_dropout_rate', .0)
     nu_bias_init = kwargs.get('dispersion_bias', -0.0)
     _max_log_lib = math.log(kwargs.get('lib_target', 1e4))
-    iaf_concat = kwargs.get('iaf_concat', True)
+    iaf_couple = kwargs.get('iaf_couple', True)
 
     x_in = Input(shape=(D,))
     x_log = Log1P()(x_in)
@@ -289,7 +285,7 @@ def build_nb_model(
             _name="IAF_MU",
             latent_dim = d,
             num_trans = iaf_trans,
-            concat_h_z = iaf_concat
+            concat_h_z = iaf_couple
         )
         z_mu, z_mu_mean, z_mu_logvar, kl_mu  = IAF
 
@@ -306,7 +302,7 @@ def build_nb_model(
     # spike-and-slap #
     ##################
 
-    gumbel_temperature = K.variable(1.0, name="Gumbel Temperature")
+    gumbel_temperature = K.variable(1.0, name="GumbelTemperature")
     latent_spike = None
 
     if kwargs.get('with_spike', False):
@@ -319,9 +315,9 @@ def build_nb_model(
             name = "spike_z"
         )(z_spike_logits)
 
-        z_mu = layers.multiply([z_mu , z_spike])
+        z_mu = layers.multiply([z_mu , z_spike], name = 'z_mu_spike')
 
-        latent_spike = keras.Model(x_in, z_spike)
+        latent_spike = KerasModel(x_in, z_spike)
 
         _log_msg("With spike-slab latent states")
 
@@ -369,7 +365,7 @@ def build_nb_model(
 
     x_lib_l1 = 1.0
 
-    _log_msg("apply strong L1 on library size estimation: %f"%x_lib_l1)
+    _log_msg("Apply strong L1 on library size estimation: %f"%x_lib_l1)
 
     x_lib = Dense(
         units = 1,
@@ -407,14 +403,14 @@ def build_nb_model(
         axis=-1,
         name='x_out')
 
-    model = keras.Model([x_in, x_covar], x_out)
+    model = KerasModel([x_in, x_covar], x_out)
 
     #########################
     # latent variable model #
     #########################
 
-    latent_mu = keras.Model(x_in, z_mu_mean)
-    latent_logvar = keras.Model(x_in, z_mu_logvar)
+    latent_mu = KerasModel(x_in, z_mu_mean)
+    latent_logvar = KerasModel(x_in, z_mu_logvar)
 
     ################
     # library size #
@@ -424,9 +420,9 @@ def build_nb_model(
         name='out_lib'
     )(x_lib)
 
-    libsize = keras.Model(x_in, x_lib_out)
+    libsize = KerasModel(x_in, x_lib_out)
 
-    model.kl_weight = K.variable(0.0, name = "KL weight")
+    model.kl_weight = K.variable(0.0, name = "KLWeight")
 
     model.gumbel_temperature = gumbel_temperature
 
@@ -519,7 +515,7 @@ def train_nb_vae_kl_annealing(_model, _loss, xx_cc : list, **kwargs):
     _gumbel_rate = kwargs.get('gumbel_rate', 1e-2)
     _kl_rate = kwargs.get('kl_rate', 1.0)
 
-    opt = optimizers.adam(lr=lr, clipvalue=clipval)
+    opt = optimizers.Adam(lr=lr, clipvalue=clipval)
 
     _model.compile(
         optimizer=opt,
@@ -620,7 +616,8 @@ def run(args):
         nn_dropout_rate = args.dropout,
         a0 = args.a0,
         lib_target = args.std_target,
-        iaf_trans = args.iaf_trans
+        iaf_trans = args.iaf_trans,
+        iaf_couple = args.iaf_couple
     )
 
     plot_model(model, args.out + "_model.png")
@@ -683,4 +680,3 @@ def write_results(_model, _latent_models, trace, args) :
     save_list(cols.tolist(), args.out + ".features.gz")
 
     return
-

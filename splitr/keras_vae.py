@@ -3,6 +3,7 @@
 ###########################
 
 import keras
+from keras import Model as KerasModel
 from keras import backend as K
 from keras.layers import Input, Dense, Lambda, Dropout, BatchNormalization
 from keras.layers import Layer
@@ -11,6 +12,8 @@ from keras.regularizers import l2, l1
 from keras import losses
 from keras import optimizers
 from keras.callbacks import Callback
+from keras.utils import plot_model
+
 import numpy as np
 
 ################################################################################
@@ -235,16 +238,18 @@ def add_iaf_transformation(hh, z_prev, mu_prev, logvar_prev, **kwargs):
     act = kwargs.get('act','linear')
     pmin = kwargs.get('pmin',1e-4)
     l1_penalty = kwargs.get('l1_penalty', 1e-4)
+    iaf_concat = kwargs.get('iaf_concat', False)
 
     _name_it = keras_name_func(**kwargs)
 
     d = K.int_shape(z_prev)[1]
 
-    # hh_z = layers.concatenate(
-    #     [hh, z_prev],
-    #     axis=1,
-    #     name=_name_it('iaf_concat')
-    # )
+    if iaf_concat:
+        hh = layers.concatenate(
+            [hh, z_prev],
+            axis=1,
+            name=_name_it('iaf_concat')
+        )
 
     mu = Dense(
         d,
