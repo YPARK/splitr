@@ -66,7 +66,7 @@ class NBLogRate(Layer):
     def __init__(
             self,
             units,
-            init_val : float = -5.0,
+            init_val : float = 0.0,
             max_log_lib : float = 15.0,
             **kwargs):
         self.units = units
@@ -105,7 +105,7 @@ class NBLogRate(Layer):
         z, lam = x
 
         # To gain stability
-        lam_ = K.clip(lam, 0.0, self.max_log_lib)
+        lam_ = K.clip(lam, -self.max_log_lib, self.max_log_lib)
         ret = K.dot(z, self.kernel) + K.dot(lam_, self.ones_D)
         ret = K.bias_add(ret, self.bias, data_format='channels_last')
         return ret
@@ -229,8 +229,8 @@ def build_nb_model(
 
     # options
 
-        l1_penalty        : L1 penalty for the mean model (1e-2)
-        nu_l1_penalty     : L1 penalty for the variance model (1e-2)
+        l2_penalty        : L2 penalty for the mean model (1e-2)
+        nu_l2_penalty     : L2 penalty for the variance model (1e-2)
         nn_dropout_rate   : neural network dropout rate (0.1)
 
         a0                : minimum inverse over-dispersion
@@ -244,8 +244,8 @@ def build_nb_model(
 
     """
 
-    l1_penalty = kwargs.get('l1_penalty', 1e-2)
-    l1_penalty_nu = kwargs.get('nu_l1_penalty', 1e-2)
+    l2_penalty = kwargs.get('l2_penalty', 1e-2)
+    l2_penalty_nu = kwargs.get('nu_l2_penalty', 1e-2)
     nn_dropout = kwargs.get('nn_dropout_rate', .0)
     nu_bias_init = kwargs.get('dispersion_bias', -0.0)
     _max_log_lib = math.log(kwargs.get('lib_target', 1e4))
@@ -266,7 +266,7 @@ def build_nb_model(
         hh = Dense(
             d,
             activation='relu',
-            activity_regularizer=l1(l1_penalty),
+            activity_regularizer=l2(l2_penalty),
             name='mu_%d'%(i+1)
         )(hh)
 
@@ -330,7 +330,7 @@ def build_nb_model(
     z_covar  = Dense(
         units = dims_encoding[-1],
         name = 'z_covar',
-        activity_regularizer = l1(l1_penalty)
+        activity_regularizer = l2(l2_penalty)
     )(x_covar)
 
     z_mu_covar = layers.add([z_mu, z_covar], name='z_mu_covar')
@@ -347,7 +347,7 @@ def build_nb_model(
         hh_lib = Dense(
             d,
             activation='relu',
-            activity_regularizer=l1(l1_penalty),
+            activity_regularizer=l2(l2_penalty),
             name='lib_%d'%(i+1)
         )(hh_lib)
 
@@ -363,14 +363,14 @@ def build_nb_model(
     z_lib, z_lib_mean, z_lib_logvar = _temp
     kl_lib = gaussian_kl_loss(z_lib_mean, z_lib_logvar)
 
-    x_lib_l1 = 1.0
+    x_lib_l2 = 1.0
 
-    _log_msg("Apply strong L1 on library size estimation: %f"%x_lib_l1)
+    _log_msg("Apply strong L2 on library size estimation: %f"%x_lib_l2)
 
     x_lib = Dense(
         units = 1,
         name = 'x_lib',
-        activity_regularizer=l1(x_lib_l1)
+        activity_regularizer=l2(x_lib_l2)
     )(z_lib)
 
     ####################
@@ -615,7 +615,7 @@ def run(args):
         with_spike = args.spike,
         nn_dropout_rate = args.dropout,
         a0 = args.a0,
-        lib_target = args.std_target,
+        lib_target = args.std_target * 2,
         iaf_trans = args.iaf_trans,
         iaf_couple = args.iaf_couple
     )

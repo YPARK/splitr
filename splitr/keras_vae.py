@@ -131,21 +131,20 @@ def add_gaussian_stoch_layer(hh, **kwargs):
 
     d = K.int_shape(hh)[1]
     latent_dim = kwargs.get('latent_dim', d)
-    l1_penalty = kwargs.get('l1_penalty', 1e-2)
+    l2_penalty = kwargs.get('l2_penalty', 1e-2)
 
     _name_it = keras_name_func(**kwargs)
 
     mu = Dense(
         latent_dim,
         activation='linear',
-        activity_regularizer=l1(l1_penalty),
         name=_name_it('mu')
     )(hh)
 
     logvar = Dense(
         latent_dim,
         activation='linear',
-        activity_regularizer=l1(l1_penalty),
+        activity_regularizer=l2(l2_penalty),
         name=_name_it('sig')
     )(hh)
     z_stoch = GaussianStoch(output_dim=(latent_dim,), name=_name_it('stoch'))([mu,logvar])
@@ -237,7 +236,7 @@ def add_iaf_transformation(hh, z_prev, mu_prev, logvar_prev, **kwargs):
     rank = kwargs.get('rank',None)
     act = kwargs.get('act','linear')
     pmin = kwargs.get('pmin',1e-4)
-    l1_penalty = kwargs.get('l1_penalty', 1e-4)
+    l2_penalty = kwargs.get('l2_penalty', 1e-4)
     iaf_concat = kwargs.get('iaf_concat', False)
 
     _name_it = keras_name_func(**kwargs)
@@ -254,14 +253,13 @@ def add_iaf_transformation(hh, z_prev, mu_prev, logvar_prev, **kwargs):
     mu = Dense(
         d,
         activation=act,
-        activity_regularizer=l1(l1_penalty),
         name=_name_it('mu')
     )(hh)
 
     sig = Dense(
         d,
         activation='sigmoid',
-        activity_regularizer=l1(l1_penalty),
+        activity_regularizer=l2(l2_penalty),
         name=_name_it('sig')
     )(hh)
 
