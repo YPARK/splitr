@@ -138,6 +138,7 @@ def add_gaussian_stoch_layer(hh, **kwargs):
     mu = Dense(
         latent_dim,
         activation='linear',
+        activity_regularizer=l2(l2_penalty),
         name=_name_it('mu')
     )(hh)
 
@@ -253,6 +254,7 @@ def add_iaf_transformation(hh, z_prev, mu_prev, logvar_prev, **kwargs):
     mu = Dense(
         d,
         activation=act,
+        activity_regularizer=l2(l2_penalty),
         name=_name_it('mu')
     )(hh)
 

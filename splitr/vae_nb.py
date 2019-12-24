@@ -232,7 +232,6 @@ def build_nb_model(
         l2_penalty        : L2 penalty for the mean model (1e-2)
         nu_l2_penalty     : L2 penalty for the variance model (1e-2)
         nn_dropout_rate   : neural network dropout rate (0.1)
-
         a0                : minimum inverse over-dispersion
         tau               : hyperparameter
 
@@ -250,6 +249,8 @@ def build_nb_model(
     nu_bias_init = kwargs.get('dispersion_bias', -0.0)
     _max_log_lib = math.log(kwargs.get('lib_target', 1e4))
     iaf_couple = kwargs.get('iaf_couple', True)
+    add_batchnorm = kwargs.get('add_batchnorm', True)
+    _act = kwargs.get('act', 'linear')
 
     x_in = Input(shape=(D,))
     x_log = Log1P()(x_in)
@@ -263,14 +264,15 @@ def build_nb_model(
 
     for i,d in enumerate(dims_encoding):
 
+        if add_batchnorm:
+            hh = BatchNormalization(name = 'mu_batch_norm_%d'%(i+1))(hh)
+
         hh = Dense(
             d,
-            activation='relu',
+            activation=_act,
             activity_regularizer=l2(l2_penalty),
             name='mu_%d'%(i+1)
         )(hh)
-
-        hh = BatchNormalization(name = 'mu_batch_norm_%d'%(i+1))(hh)
 
         if nn_dropout > 0.0 and nn_dropout < 1.0:
             _name = 'mu_dropout_%d'%(i+1)
@@ -344,14 +346,15 @@ def build_nb_model(
 
     for i,d in enumerate(dims_encoding_lib):
 
+        if add_batchnorm:
+            hh_lib = BatchNormalization(name = 'lib_batch_norm_%d'%(i+1))(hh_lib)
+
         hh_lib = Dense(
             d,
-            activation='relu',
+            activation='linear',
             activity_regularizer=l2(l2_penalty),
             name='lib_%d'%(i+1)
         )(hh_lib)
-
-        hh_lib = BatchNormalization(name = 'lib_batch_norm_%d'%(i+1))(hh_lib)
 
         if nn_dropout > 0.0 and nn_dropout < 1.0:
             _name = 'lib_dropout_%d'%(i+1)
@@ -617,7 +620,9 @@ def run(args):
         a0 = args.a0,
         lib_target = args.std_target * 2,
         iaf_trans = args.iaf_trans,
-        iaf_couple = args.iaf_couple
+        iaf_couple = args.iaf_couple,
+        add_batchnorm = args.batchnorm,
+        act = args.act
     )
 
     plot_model(model, args.out + "_model.png")

@@ -55,14 +55,18 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', default = 1e-4, type = float, help = "learning rate" )
     parser.add_argument('--clip_value', default = 1e-2, type = float, help = "clip value" )
     parser.add_argument('--epochs', default = 1000, type = int, help = "number of epochs" )
-    parser.add_argument('--iaf_trans', default = 3, type = int, help = "number of IAF transformations" )
+    parser.add_argument('--iaf_trans', default = 0, type = int, help = "number of IAF transformations" )
     parser.add_argument('--iaf_couple', default = False, type = bool, help = "Couple the hidden and stochastic variables in IAF" )
+    parser.add_argument('--batchnorm', default = True, type = bool, help = "Add a batch-normalization layer(s)" )
     parser.add_argument('--dropout', default = 0.0, type = float, help = "Apply dropout to avoid over-fitting" )
     parser.add_argument('--spike', default = False, type = bool, help = "With spike-and-slab layer" )
     parser.add_argument('--kl_rate', default = 0.5, type = float, help = "KL term annealing rate" )
     parser.add_argument('--standardize_data', default = True, help = "standardization of data" )
     parser.add_argument('--std_target', default = 1e4, type = float, help = "The targeting count of standardization procedure" )
     parser.add_argument('--a0', default = 1e-4, type = float, help = "Minimum inverse overdispersion" )
+
+    parser.add_argument('--act', default = 'linear', choices=['linear', 'relu'],
+                        help = "An activity function for the encoding layers" )
 
     parser.add_argument(
         '--sample_cutoff',
